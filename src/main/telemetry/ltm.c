@@ -46,18 +46,14 @@
 #include "common/utils.h"
 
 #include "drivers/system.h"
-#include "drivers/sensor.h"
-#include "drivers/accgyro.h"
-#include "drivers/gpio.h"
-#include "drivers/timer.h"
 #include "drivers/serial.h"
-#include "drivers/pwm_rx.h"
 
 #include "sensors/sensors.h"
 #include "sensors/acceleration.h"
 #include "sensors/gyro.h"
 #include "sensors/barometer.h"
 #include "sensors/boardalignment.h"
+#include "sensors/diagnostics.h"
 #include "sensors/battery.h"
 
 #include "io/serial.h"
@@ -210,7 +206,7 @@ void ltm_sframe(sbuf_t *dst)
         lt_statemode |= 2;
     sbufWriteU8(dst, 'S');
     ltm_serialise_16(dst, vbat * 100);    //vbat converted to mv
-    ltm_serialise_16(dst, 0);             //  current, not implemented
+    ltm_serialise_16(dst, (uint16_t)constrain(mAhDrawn, 0, 0xFFFF));    // current mAh (65535 mAh max)
     ltm_serialise_8(dst, (uint8_t)((rssi * 254) / 1023));        // scaled RSSI (uchar)
     ltm_serialise_8(dst, 0);              // no airspeed
     ltm_serialise_8(dst, (lt_flightmode << 2) | lt_statemode);
@@ -250,9 +246,12 @@ void ltm_oframe(sbuf_t *dst)
  */
 void ltm_xframe(sbuf_t *dst)
 {
+    uint8_t sensorStatus =
+        (isHardwareHealthy() ? 0 : 1) << 0;     // bit 0 - hardware failure indication (1 - something is wrong with the hardware sensors)
+
     sbufWriteU8(dst, 'X');
     ltm_serialise_16(dst, gpsSol.hdop);
-    ltm_serialise_8(dst, 0);
+    ltm_serialise_8(dst, sensorStatus);
     ltm_serialise_8(dst, 0);
     ltm_serialise_8(dst, 0);
     ltm_serialise_8(dst, 0);
@@ -271,20 +270,6 @@ void ltm_nframe(sbuf_t *dst)
     ltm_serialise_8(dst, NAV_Status.activeWpNumber);
     ltm_serialise_8(dst, NAV_Status.error);
     ltm_serialise_8(dst, NAV_Status.flags);
-}
-#endif
-
-#if defined(GPS)
-static bool ltm_shouldSendXFrame(void)
-{
-    static uint16_t lastHDOP = 0;
-
-    if (lastHDOP != gpsSol.hdop) {
-        lastHDOP = gpsSol.hdop;
-        return true;
-    }
-
-    return false;
 }
 #endif
 
@@ -335,7 +320,7 @@ static void process_ltm(void)
         ltm_finalise(dst);
     }
 
-    if (current_schedule & LTM_BIT_XFRAME && ltm_shouldSendXFrame()) {
+    if (current_schedule & LTM_BIT_XFRAME) {
         ltm_initialise_packet(dst);
         ltm_xframe(dst);
         ltm_finalise(dst);
@@ -412,5 +397,45 @@ void checkLtmTelemetryState(void)
         configureLtmTelemetryPort();
     else
         freeLtmTelemetryPort();
+}
+
+int getLtmFrame(uint8_t *frame, ltm_frame_e ltmFrameType)
+{
+    static uint8_t ltmPayload[LTM_MAX_MESSAGE_SIZE];
+
+    sbuf_t ltmPayloadBuf = { .ptr = ltmPayload, .end =ARRAYEND(ltmPayload) };
+    sbuf_t * const sbuf = &ltmPayloadBuf;
+
+    switch (ltmFrameType) {
+    default:
+    case LTM_AFRAME:
+        ltm_aframe(sbuf);
+        break;
+    case LTM_SFRAME:
+        ltm_sframe(sbuf);
+        break;
+#if defined(GPS)
+    case LTM_GFRAME:
+        ltm_gframe(sbuf);
+        break;
+    case LTM_OFRAME:
+        ltm_oframe(sbuf);
+        break;
+    case LTM_XFRAME:
+        ltm_xframe(sbuf);
+        break;
+#endif
+#if defined(NAV)
+    case LTM_NFRAME:
+        ltm_nframe(sbuf);
+        break;
+#endif
+    }
+    sbufSwitchToReader(sbuf, ltmPayload);
+    const int frameSize = sbufBytesRemaining(sbuf);
+    for (int ii = 0; sbufBytesRemaining(sbuf); ++ii) {
+        frame[ii] = sbufReadU8(sbuf);
+    }
+    return frameSize;
 }
 #endif

@@ -22,7 +22,7 @@
 #define INVERTER                PB2 // PB2 (BOOT1) used as inverter select GPIO
 #define INVERTER_USART          USART1
 
-#define BEEPER                  PB15
+#define BEEPER                  PA15
 #define BEEPER_OPT              PB2
 
 #define USE_EXTI
@@ -36,6 +36,7 @@
 
 #define USE_I2C
 #define I2C_DEVICE (I2CDEV_2) // Flex port - SCL/PB10, SDA/PB11
+#define I2C_DEVICE_SHARES_UART3
 
 #define MPU6000_CS_PIN          PA4
 #define MPU6000_SPI_INSTANCE    SPI1
@@ -63,7 +64,7 @@
 // External I2C MAG
 #define MAG
 #define USE_MAG_HMC5883
-#define USE_MAG_AK8975
+//#define USE_MAG_AK8975
 //#define USE_MAG_MAG3110
 
 #define USE_VCP
@@ -79,19 +80,20 @@
 #endif
 
 #ifdef USE_RX_NRF24
-#define DEFAULT_RX_FEATURE      FEATURE_RX_NRF24
+#define USE_RX_SPI
+#define DEFAULT_RX_FEATURE      FEATURE_RX_SPI
 #define DEFAULT_FEATURES        FEATURE_SOFTSPI
 #define USE_RX_SYMA
 //#define USE_RX_V202
 #define USE_RX_CX10
 //#define USE_RX_H8_3D
 #define USE_RX_INAV
-#define NRF24_DEFAULT_PROTOCOL  NRF24RX_SYMA_X5C
-//#define NRF24_DEFAULT_PROTOCOL NRF24RX_V202_1M
-//#define NRF24_DEFAULT_PROTOCOL NRF24RX_H8_3D
+#define RX_SPI_DEFAULT_PROTOCOL  NRF24RX_SYMA_X5C
+//#define RX_SPI_DEFAULT_PROTOCOL NRF24RX_V202_1M
+//#define RX_SPI_DEFAULT_PROTOCOL NRF24RX_H8_3D
 
 #define USE_SOFTSPI
-#define USE_NRF24_SOFTSPI
+#define USE_RX_SOFTSPI
 
 // RC pinouts
 // RC1              GND
@@ -104,14 +106,14 @@
 // RC8  PA1/TIM2    CE / RX_PPM
 
 // Nordic Semiconductor uses 'CSN', STM uses 'NSS'
-#define NRF24_CSN_GPIO_CLK_PERIPHERAL   RCC_APB2Periph_GPIOA
-#define NRF24_CSN_PIN                   PA0
-#define NRF24_CE_GPIO_CLK_PERIPHERAL    RCC_APB2Periph_GPIOA
-#define NRF24_CE_PIN                    PA1
-#define NRF24_CSN_PIN                   PA0
-#define NRF24_SCK_PIN                   PB5
-#define NRF24_MOSI_PIN                  PB1
-#define NRF24_MISO_PIN                  PB0
+#define RX_NSS_GPIO_CLK_PERIPHERAL  RCC_APB2Periph_GPIOA
+#define RX_NSS_PIN                  PA0
+#define RX_CE_GPIO_CLK_PERIPHERAL   RCC_APB2Periph_GPIOA
+#define RX_CE_PIN                   PA1
+#define RX_NSS_PIN                  PA0
+#define RX_SCK_PIN                  PB5
+#define RX_MOSI_PIN                 PB1
+#define RX_MISO_PIN                 PB0
 
 #define SERIAL_PORT_COUNT 3
 
@@ -160,26 +162,15 @@
 #define SONAR_ECHO_PIN          PB0
 #define SONAR_TRIGGER_PIN       PB5
 
-#define NAV
 //#define NAV_AUTO_MAG_DECLINATION
-#define NAV_GPS_GLITCH_DETECTION
-#define NAV_MAX_WAYPOINTS       30
+//#define NAV_GPS_GLITCH_DETECTION
 
 #define ENABLE_BLACKBOX_LOGGING_ON_SPIFLASH_BY_DEFAULT
-
-#undef TELEMETRY_FRSKY
-#undef TELEMETRY_HOTT
-#undef TELEMETRY_SMARTPORT
-
-#undef GPS_PROTO_NAZA
 
 #ifdef OPBL
 
 #ifdef USE_RX_NRF24
 #undef USE_SERVOS
-#undef USE_SONAR
-#else
-#undef USE_SONAR_SRF10
 #endif // USE_RX_NRF24
 
 #define TARGET_MOTOR_COUNT 4
@@ -192,20 +183,25 @@
 #else
 #define TARGET_MOTOR_COUNT 4
 #define DISABLE_UNCOMMON_MIXERS
+#undef BLACKBOX
 #endif //OPBL
 
 
-#define SKIP_RX_MSP
 #ifdef USE_RX_NRF24
 #define SKIP_RX_PWM_PPM
 #undef SERIAL_RX
 #undef SPEKTRUM_BIND
-#undef TELEMETRY
-#undef TELEMETRY_LTM
 #endif
 
+// Number of available PWM outputs
+#define MAX_PWM_OUTPUT_PORTS    11
 
 // DEBUG
+//#define USE_ASSERT          // include assertion support code
+//#define USE_ASSERT_FULL     // Provide file information
+//#define USE_ASSERT_STOP   // stop on failed assertion
+//#define USE_ASSERT_CHECK    // include assertion check code (should in general a per-file define)
+
 //#define HIL
 //#define USE_FAKE_MAG
 //#define USE_FAKE_BARO

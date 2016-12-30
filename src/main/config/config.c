@@ -23,20 +23,16 @@
 
 #include "build/build_config.h"
 
+#include "blackbox/blackbox_io.h"
 
 #include "common/color.h"
 #include "common/axis.h"
 #include "common/maths.h"
 #include "common/filter.h"
 
-#include "drivers/sensor.h"
-#include "drivers/accgyro.h"
-#include "drivers/compass.h"
 #include "drivers/system.h"
-#include "drivers/gpio.h"
-#include "drivers/timer.h"
-#include "drivers/pwm_rx.h"
-#include "drivers/rx_nrf24l01.h"
+#include "drivers/rx_spi.h"
+#include "drivers/pwm_output.h"
 #include "drivers/serial.h"
 
 #include "sensors/sensors.h"
@@ -44,26 +40,28 @@
 #include "sensors/compass.h"
 #include "sensors/acceleration.h"
 #include "sensors/barometer.h"
-#include "sensors/boardalignment.h"
 #include "sensors/battery.h"
+#include "sensors/boardalignment.h"
+#include "sensors/pitotmeter.h"
 
 #include "io/beeper.h"
 #include "io/serial.h"
 #include "io/gimbal.h"
-#include "io/escservo.h"
+#include "io/motors.h"
+#include "io/servos.h"
 #include "fc/rc_controls.h"
 #include "fc/rc_curves.h"
 #include "io/ledstrip.h"
 #include "io/gps.h"
+#include "io/osd.h"
 
 #include "rx/rx.h"
-#include "rx/nrf24.h"
-
-#include "blackbox/blackbox_io.h"
+#include "rx/rx_spi.h"
 
 #include "telemetry/telemetry.h"
 
 #include "flight/mixer.h"
+#include "flight/servos.h"
 #include "flight/pid.h"
 #include "flight/imu.h"
 #include "flight/failsafe.h"
@@ -72,107 +70,28 @@
 #include "fc/runtime_config.h"
 
 #include "config/config.h"
-
+#include "config/config_eeprom.h"
 #include "config/config_profile.h"
 #include "config/config_master.h"
+#include "config/feature.h"
 
 #ifndef DEFAULT_RX_FEATURE
 #define DEFAULT_RX_FEATURE FEATURE_RX_PARALLEL_PWM
+#endif
+#ifndef RX_SPI_DEFAULT_PROTOCOL
+#define RX_SPI_DEFAULT_PROTOCOL 0
 #endif
 
 #define BRUSHED_MOTORS_PWM_RATE 16000
 #define BRUSHLESS_MOTORS_PWM_RATE 400
 
-void useRcControlsConfig(modeActivationCondition_t *modeActivationConditions, escAndServoConfig_t *escAndServoConfigToUse, pidProfile_t *pidProfileToUse);
-
-#ifndef DEFAULT_RX_FEATURE
-#define DEFAULT_RX_FEATURE FEATURE_RX_PARALLEL_PWM
-#endif
-#ifndef NRF24_DEFAULT_PROTOCOL
-#define NRF24_DEFAULT_PROTOCOL 0
-#endif
-
-#if !defined(FLASH_SIZE)
-#error "Flash size not defined for target. (specify in KB)"
-#endif
-
-
-#ifndef FLASH_PAGE_SIZE
-    #ifdef STM32F303xC
-        #define FLASH_PAGE_SIZE                 ((uint16_t)0x800)
-    #endif
-
-    #ifdef STM32F10X_MD
-        #define FLASH_PAGE_SIZE                 ((uint16_t)0x400)
-    #endif
-
-    #ifdef STM32F10X_HD
-        #define FLASH_PAGE_SIZE                 ((uint16_t)0x800)
-    #endif
-
-    #if defined(STM32F40_41xxx)
-        #define FLASH_PAGE_SIZE                 ((uint32_t)0x20000)
-    #endif
-
-    #if defined (STM32F411xE)
-        #define FLASH_PAGE_SIZE                 ((uint32_t)0x20000)
-    #endif
-
-#endif
-
-#if !defined(FLASH_SIZE) && !defined(FLASH_PAGE_COUNT)
-    #ifdef STM32F10X_MD
-        #define FLASH_PAGE_COUNT 128
-    #endif
-
-    #ifdef STM32F10X_HD
-        #define FLASH_PAGE_COUNT 128
-    #endif
-#endif
-
-#if defined(FLASH_SIZE)
-#if defined(STM32F40_41xxx)
-#define FLASH_PAGE_COUNT 4 // just to make calculations work
-#elif defined (STM32F411xE)
-#define FLASH_PAGE_COUNT 4 // just to make calculations work
-#else
-#define FLASH_PAGE_COUNT ((FLASH_SIZE * 0x400) / FLASH_PAGE_SIZE)
-#endif
-#endif
-
-#if !defined(FLASH_PAGE_SIZE)
-#error "Flash page size not defined for target."
-#endif
-
-#if !defined(FLASH_PAGE_COUNT)
-#error "Flash page count not defined for target."
-#endif
-
-#if FLASH_SIZE <= 128
-#define FLASH_TO_RESERVE_FOR_CONFIG 0x800
-#else
-#define FLASH_TO_RESERVE_FOR_CONFIG 0x1000
-#endif
-
-// use the last flash pages for storage
-#ifdef CUSTOM_FLASH_MEMORY_ADDRESS
-size_t custom_flash_memory_address = 0;
-#define CONFIG_START_FLASH_ADDRESS (custom_flash_memory_address)
-#else
-// use the last flash pages for storage
-#ifndef CONFIG_START_FLASH_ADDRESS 
-#define CONFIG_START_FLASH_ADDRESS (0x08000000 + (uint32_t)((FLASH_PAGE_SIZE * FLASH_PAGE_COUNT) - FLASH_TO_RESERVE_FOR_CONFIG))
-#endif
-#endif
 
 master_t masterConfig;                 // master config struct with data independent from profiles
 profile_t *currentProfile;
-static uint32_t activeFeaturesLatch = 0;
 
 static uint8_t currentControlRateProfileIndex = 0;
 controlRateConfig_t *currentControlRateProfile;
 
-static const uint8_t EEPROM_CONF_VERSION = 121;
 
 static void resetAccelerometerTrims(flightDynamicsTrims_t * accZero, flightDynamicsTrims_t * accGain)
 {
@@ -232,79 +151,93 @@ void resetPidProfile(pidProfile_t *pidProfile)
 
     pidProfile->max_angle_inclination[FD_ROLL] = 300;    // 30 degrees
     pidProfile->max_angle_inclination[FD_PITCH] = 300;    // 30 degrees
+#ifdef USE_SERVOS
+    pidProfile->fixedWingItermThrowLimit = FW_ITERM_THROW_LIMIT_DEFAULT;
+#endif
+
 }
 
 #ifdef NAV
 void resetNavConfig(navConfig_t * navConfig)
 {
     // Navigation flags
-    navConfig->flags.use_thr_mid_for_althold = 0;
-    navConfig->flags.extra_arming_safety = 1;
-    navConfig->flags.user_control_mode = NAV_GPS_ATTI;
-    navConfig->flags.rth_alt_control_style = NAV_RTH_AT_LEAST_ALT;
-    navConfig->flags.rth_tail_first = 0;
-    navConfig->flags.disarm_on_landing = 0;
+    navConfig->general.flags.use_thr_mid_for_althold = 0;
+    navConfig->general.flags.extra_arming_safety = 1;
+    navConfig->general.flags.user_control_mode = NAV_GPS_ATTI;
+    navConfig->general.flags.rth_alt_control_mode = NAV_RTH_AT_LEAST_ALT;
+    navConfig->general.flags.rth_climb_first = 1;                         // Climb first, turn after reaching safe altitude
+    navConfig->general.flags.rth_tail_first = 0;
+    navConfig->general.flags.disarm_on_landing = 0;
 
     // Inertial position estimator parameters
 #if defined(NAV_AUTO_MAG_DECLINATION)
-    navConfig->inav.automatic_mag_declination = 1;
+    navConfig->estimation.automatic_mag_declination = 1;
 #endif
-    navConfig->inav.gps_min_sats = 6;
-    navConfig->inav.gps_delay_ms = 200;
-    navConfig->inav.accz_unarmed_cal = 1;
-    navConfig->inav.use_gps_velned = 1;         // "Disabled" is mandatory with gps_dyn_model = Pedestrian
+    navConfig->estimation.gps_min_sats = 6;
+    navConfig->estimation.gps_delay_ms = 200;
+    navConfig->estimation.accz_unarmed_cal = 1;
+    navConfig->estimation.use_gps_velned = 1;         // "Disabled" is mandatory with gps_dyn_model = Pedestrian
 
-    navConfig->inav.w_z_baro_p = 0.35f;
+    navConfig->estimation.w_z_baro_p = 0.35f;
 
-    navConfig->inav.w_z_gps_p = 0.2f;
-    navConfig->inav.w_z_gps_v = 0.5f;
+    navConfig->estimation.w_z_gps_p = 0.2f;
+    navConfig->estimation.w_z_gps_v = 0.5f;
 
-    navConfig->inav.w_xy_gps_p = 1.0f;
-    navConfig->inav.w_xy_gps_v = 2.0f;
+    navConfig->estimation.w_xy_gps_p = 1.0f;
+    navConfig->estimation.w_xy_gps_v = 2.0f;
 
-    navConfig->inav.w_z_res_v = 0.5f;
-    navConfig->inav.w_xy_res_v = 0.5f;
+    navConfig->estimation.w_z_res_v = 0.5f;
+    navConfig->estimation.w_xy_res_v = 0.5f;
 
-    navConfig->inav.w_acc_bias = 0.01f;
+    navConfig->estimation.w_acc_bias = 0.01f;
 
-    navConfig->inav.max_eph_epv = 1000.0f;
-    navConfig->inav.baro_epv = 100.0f;
+    navConfig->estimation.max_eph_epv = 1000.0f;
+    navConfig->estimation.baro_epv = 100.0f;
 
     // General navigation parameters
-    navConfig->pos_failure_timeout = 5;     // 5 sec
-    navConfig->waypoint_radius = 100;       // 2m diameter
-    navConfig->max_speed = 300;             // 3 m/s = 10.8 km/h
-    navConfig->max_climb_rate = 500;        // 5 m/s
-    navConfig->max_manual_speed = 500;
-    navConfig->max_manual_climb_rate = 200;
-    navConfig->land_descent_rate = 200;     // 2 m/s
-    navConfig->land_slowdown_minalt = 500;  // 5 meters of altitude
-    navConfig->land_slowdown_maxalt = 2000; // 20 meters of altitude
-    navConfig->emerg_descent_rate = 500;    // 5 m/s
-    navConfig->min_rth_distance = 500;      // If closer than 5m - land immediately
-    navConfig->rth_altitude = 1000;         // 10m
+    navConfig->general.pos_failure_timeout = 5;     // 5 sec
+    navConfig->general.waypoint_radius = 100;       // 2m diameter
+    navConfig->general.max_speed = 300;             // 3 m/s = 10.8 km/h
+    navConfig->general.max_climb_rate = 500;        // 5 m/s
+    navConfig->general.max_manual_speed = 500;
+    navConfig->general.max_manual_climb_rate = 200;
+    navConfig->general.land_descent_rate = 200;     // 2 m/s
+    navConfig->general.land_slowdown_minalt = 500;  // 5 meters of altitude
+    navConfig->general.land_slowdown_maxalt = 2000; // 20 meters of altitude
+    navConfig->general.emerg_descent_rate = 500;    // 5 m/s
+    navConfig->general.min_rth_distance = 500;      // If closer than 5m - land immediately
+    navConfig->general.rth_altitude = 1000;         // 10m
 
     // MC-specific
-    navConfig->mc_max_bank_angle = 30;      // 30 deg
-    navConfig->mc_hover_throttle = 1500;
-    navConfig->mc_auto_disarm_delay = 2000;
+    navConfig->mc.max_bank_angle = 30;      // 30 deg
+    navConfig->mc.hover_throttle = 1500;
+    navConfig->mc.auto_disarm_delay = 2000;
 
     // Fixed wing
-    navConfig->fw_max_bank_angle = 20;      // 30 deg
-    navConfig->fw_max_climb_angle = 20;
-    navConfig->fw_max_dive_angle = 15;
-    navConfig->fw_cruise_throttle = 1400;
-    navConfig->fw_max_throttle = 1700;
-    navConfig->fw_min_throttle = 1200;
-    navConfig->fw_pitch_to_throttle = 10;
-    navConfig->fw_roll_to_pitch = 75;
-    navConfig->fw_loiter_radius = 5000;     // 50m
+    navConfig->fw.max_bank_angle = 20;      // 30 deg
+    navConfig->fw.max_climb_angle = 20;
+    navConfig->fw.max_dive_angle = 15;
+    navConfig->fw.cruise_throttle = 1400;
+    navConfig->fw.max_throttle = 1700;
+    navConfig->fw.min_throttle = 1200;
+    navConfig->fw.pitch_to_throttle = 10;   // pwm units per degree of pitch (10pwm units ~ 1% throttle)
+    navConfig->fw.roll_to_pitch = 75;       // percent of coupling
+    navConfig->fw.loiter_radius = 5000;     // 50m
+
+    // Fixed wing launch
+    navConfig->fw.launch_velocity_thresh = 300;         // 3 m/s
+    navConfig->fw.launch_accel_thresh = 1.9f * 981;     // cm/s/s (1.9*G)
+    navConfig->fw.launch_time_thresh = 40;              // 40ms
+    navConfig->fw.launch_throttle = 1700;
+    navConfig->fw.launch_motor_timer = 500;             // ms
+    navConfig->fw.launch_timeout = 5000;                // ms, timeout for launch procedure
+    navConfig->fw.launch_climb_angle = 10;              // 10 deg
 }
 
 void validateNavConfig(navConfig_t * navConfig)
 {
     // Make sure minAlt is not more than maxAlt, maxAlt cannot be set lower than 500.
-    navConfig->land_slowdown_minalt = MIN(navConfig->land_slowdown_minalt, navConfig->land_slowdown_maxalt - 100);
+    navConfig->general.land_slowdown_minalt = MIN(navConfig->general.land_slowdown_minalt, navConfig->general.land_slowdown_maxalt - 100);
 }
 #endif
 
@@ -313,20 +246,36 @@ void resetBarometerConfig(barometerConfig_t *barometerConfig)
     barometerConfig->use_median_filtering = 1;
 }
 
-void resetSensorAlignment(sensorAlignmentConfig_t *sensorAlignmentConfig)
+void resetPitotmeterConfig(pitotmeterConfig_t *pitotmeterConfig)
 {
-    sensorAlignmentConfig->gyro_align = ALIGN_DEFAULT;
-    sensorAlignmentConfig->acc_align = ALIGN_DEFAULT;
-    sensorAlignmentConfig->mag_align = ALIGN_DEFAULT;
+    pitotmeterConfig->use_median_filtering = 1;
+    pitotmeterConfig->pitot_noise_lpf = 0.6f;
+    pitotmeterConfig->pitot_scale = 1.00f;
 }
 
-void resetEscAndServoConfig(escAndServoConfig_t *escAndServoConfig)
+void resetMotorConfig(motorConfig_t *motorConfig)
 {
-    escAndServoConfig->minthrottle = 1150;
-    escAndServoConfig->maxthrottle = 1850;
-    escAndServoConfig->mincommand = 1000;
-    escAndServoConfig->servoCenterPulse = 1500;
+#ifdef BRUSHED_MOTORS
+    motorConfig->minthrottle = 1000;
+    motorConfig->motorPwmProtocol = PWM_TYPE_BRUSHED;
+    motorConfig->motorPwmRate = BRUSHED_MOTORS_PWM_RATE;
+#else
+    motorConfig->minthrottle = 1150;
+    motorConfig->motorPwmProtocol = PWM_TYPE_STANDARD;
+    motorConfig->motorPwmRate = BRUSHLESS_MOTORS_PWM_RATE;
+#endif
+    motorConfig->maxthrottle = 1850;
+    motorConfig->mincommand = 1000;
+
 }
+
+#ifdef USE_SERVOS
+void resetServoConfig(servoConfig_t *servoConfig)
+{
+    servoConfig->servoCenterPulse = 1500;
+    servoConfig->servoPwmRate = 50;
+}
+#endif
 
 void resetFlight3DConfig(flight3DConfig_t *flight3DConfig)
 {
@@ -339,14 +288,22 @@ void resetFlight3DConfig(flight3DConfig_t *flight3DConfig)
 #ifdef TELEMETRY
 void resetTelemetryConfig(telemetryConfig_t *telemetryConfig)
 {
+#if defined(STM32F303xC)
+    telemetryConfig->telemetry_inversion = 1;
+#else
     telemetryConfig->telemetry_inversion = 0;
+#endif
     telemetryConfig->telemetry_switch = 0;
     telemetryConfig->gpsNoFixLatitude = 0;
     telemetryConfig->gpsNoFixLongitude = 0;
     telemetryConfig->frsky_coordinate_format = FRSKY_FORMAT_DMS;
     telemetryConfig->frsky_unit = FRSKY_UNIT_METRICS;
     telemetryConfig->frsky_vfas_precision = 0;
+    telemetryConfig->frsky_vfas_cell_voltage = 0;
     telemetryConfig->hottAlarmSoundInterval = 5;
+#ifdef TELEMETRY_SMARTPORT
+    telemetryConfig->smartportUartUnidirectional = 0;
+#endif
 }
 #endif
 
@@ -420,22 +377,61 @@ void resetRcControlsConfig(rcControlsConfig_t *rcControlsConfig) {
     rcControlsConfig->alt_hold_deadband = 50;
 }
 
-void resetMixerConfig(mixerConfig_t *mixerConfig) {
+static void resetMixerConfig(mixerConfig_t *mixerConfig)
+{
     mixerConfig->yaw_motor_direction = 1;
     mixerConfig->yaw_jump_prevention_limit = 200;
-#ifdef USE_SERVOS
-    mixerConfig->tri_unarmed_servo = 1;
-    mixerConfig->servo_lowpass_freq = 400;
-    mixerConfig->servo_lowpass_enable = 0;
-#endif
 }
+
+#ifdef USE_SERVOS
+static void resetServoMixerConfig(servoMixerConfig_t *servoMixerConfig)
+{
+    servoMixerConfig->tri_unarmed_servo = 1;
+    servoMixerConfig->servo_lowpass_freq = 400;
+    servoMixerConfig->servo_lowpass_enable = 0;
+}
+#endif
+
+#ifdef ASYNC_GYRO_PROCESSING
+uint32_t getPidUpdateRate(void) {
+    if (masterConfig.asyncMode == ASYNC_MODE_NONE) {
+        return getGyroUpdateRate();
+    } else {
+        return gyroConfig()->looptime;
+    }
+}
+
+uint32_t getGyroUpdateRate(void) {
+    return gyro.targetLooptime;
+}
+
+uint16_t getAccUpdateRate(void) {
+    if (masterConfig.asyncMode == ASYNC_MODE_ALL) {
+        return 1000000 / masterConfig.accTaskFrequency;
+    } else {
+        return getPidUpdateRate();
+    }
+}
+
+uint16_t getAttitudeUpdateRate(void) {
+    if (masterConfig.asyncMode == ASYNC_MODE_ALL) {
+        return 1000000 / masterConfig.attitudeTaskFrequency;
+    } else {
+        return getPidUpdateRate();
+    }
+}
+
+uint8_t getAsyncMode(void) {
+    return masterConfig.asyncMode;
+}
+#endif
 
 uint8_t getCurrentProfile(void)
 {
     return masterConfig.current_profile_index;
 }
 
-static void setProfile(uint8_t profileIndex)
+void setProfile(uint8_t profileIndex)
 {
     currentProfile = &masterConfig.profile[profileIndex];
 }
@@ -449,7 +445,7 @@ controlRateConfig_t *getControlRateConfig(uint8_t profileIndex) {
     return &masterConfig.controlRateProfiles[profileIndex];
 }
 
-static void setControlRateProfile(uint8_t profileIndex)
+void setControlRateProfile(uint8_t profileIndex)
 {
     currentControlRateProfileIndex = profileIndex;
     currentControlRateProfile = &masterConfig.controlRateProfiles[profileIndex];
@@ -457,26 +453,28 @@ static void setControlRateProfile(uint8_t profileIndex)
 
 uint16_t getCurrentMinthrottle(void)
 {
-    return masterConfig.escAndServoConfig.minthrottle;
+    return motorConfig()->minthrottle;
 }
 
 // Default settings
 static void resetConf(void)
 {
-    int i;
-
     // Clear all configuration
     memset(&masterConfig, 0, sizeof(master_t));
     setProfile(0);
     setControlRateProfile(0);
 
     masterConfig.version = EEPROM_CONF_VERSION;
-    masterConfig.mixerMode = MIXER_QUADX;
+    mixerConfig()->mixerMode = MIXER_QUADX;
     featureClearAll();
-    persistentFlagClearAll();
     featureSet(DEFAULT_RX_FEATURE | FEATURE_FAILSAFE);
 #ifdef DEFAULT_FEATURES
     featureSet(DEFAULT_FEATURES);
+#endif
+
+#ifdef OSD
+    featureSet(FEATURE_OSD);
+    osdResetConfig(&masterConfig.osdProfile);
 #endif
 
 #ifdef BOARD_HAS_VOLTAGE_DIVIDER
@@ -487,24 +485,44 @@ static void resetConf(void)
 
     // global settings
     masterConfig.current_profile_index = 0;     // default profile
-    masterConfig.dcm_kp_acc = 2500;             // 0.25 * 10000
-    masterConfig.dcm_ki_acc = 50;               // 0.005 * 10000
-    masterConfig.dcm_kp_mag = 10000;            // 1.00 * 10000
-    masterConfig.dcm_ki_mag = 0;                // 0.00 * 10000
-    masterConfig.gyro_lpf = 3;                  // INV_FILTER_42HZ, In case of ST gyro, will default to 32Hz instead
+    imuConfig()->dcm_kp_acc = 2500;             // 0.25 * 10000
+    imuConfig()->dcm_ki_acc = 50;               // 0.005 * 10000
+    imuConfig()->dcm_kp_mag = 10000;            // 1.00 * 10000
+    imuConfig()->dcm_ki_mag = 0;                // 0.00 * 10000
+    imuConfig()->small_angle = 25;
+    gyroConfig()->gyro_lpf = 3;                  // INV_FILTER_42HZ, In case of ST gyro, will default to 32Hz instead
 
-    resetAccelerometerTrims(&masterConfig.accZero, &masterConfig.accGain);
+    resetAccelerometerTrims(&accelerometerConfig()->accZero, &accelerometerConfig()->accGain);
 
-    resetSensorAlignment(&masterConfig.sensorAlignmentConfig);
+    gyroConfig()->gyro_align = ALIGN_DEFAULT;
+    accelerometerConfig()->acc_align = ALIGN_DEFAULT;
+    compassConfig()->mag_align = ALIGN_DEFAULT;
 
-    masterConfig.boardAlignment.rollDeciDegrees = 0;
-    masterConfig.boardAlignment.pitchDeciDegrees = 0;
-    masterConfig.boardAlignment.yawDeciDegrees = 0;
-    masterConfig.acc_hardware = ACC_DEFAULT;     // default/autodetect
-    masterConfig.gyroConfig.gyroMovementCalibrationThreshold = 32;
+    boardAlignment()->rollDeciDegrees = 0;
+    boardAlignment()->pitchDeciDegrees = 0;
+    boardAlignment()->yawDeciDegrees = 0;
 
-    masterConfig.mag_hardware = MAG_DEFAULT;     // default/autodetect
-    masterConfig.baro_hardware = BARO_DEFAULT;   // default/autodetect
+    gyroConfig()->gyroMovementCalibrationThreshold = 32;
+
+    accelerometerConfig()->acc_hardware = ACC_AUTODETECT;     // default/autodetect
+
+#ifdef MAG
+    compassConfig()->mag_hardware = MAG_AUTODETECT;
+#else
+    compassConfig()->mag_hardware = MAG_NONE;
+#endif
+
+#ifdef BARO
+    barometerConfig()->baro_hardware = BARO_AUTODETECT;
+#else
+    barometerConfig()->baro_hardware = BARO_NONE;
+#endif
+
+#ifdef PITOT
+    pitotmeterConfig()->pitot_hardware = PITOT_AUTODETECT;
+#else
+    pitotmeterConfig()->pitot_hardware = PITOT_NONE;
+#endif
 
     resetBatteryConfig(&masterConfig.batteryConfig);
 
@@ -512,54 +530,59 @@ static void resetConf(void)
     resetTelemetryConfig(&masterConfig.telemetryConfig);
 #endif
 
-    masterConfig.rxConfig.serialrx_provider = 0;
-    masterConfig.rxConfig.nrf24rx_protocol = NRF24_DEFAULT_PROTOCOL;
-    masterConfig.rxConfig.spektrum_sat_bind = 0;
-    masterConfig.rxConfig.midrc = 1500;
-    masterConfig.rxConfig.mincheck = 1100;
-    masterConfig.rxConfig.maxcheck = 1900;
-    masterConfig.rxConfig.rx_min_usec = 885;          // any of first 4 channels below this value will trigger rx loss detection
-    masterConfig.rxConfig.rx_max_usec = 2115;         // any of first 4 channels above this value will trigger rx loss detection
+#ifdef SERIALRX_PROVIDER
+    rxConfig()->serialrx_provider = SERIALRX_PROVIDER;
+#else
+    rxConfig()->serialrx_provider = 0;
+#endif
+    rxConfig()->rx_spi_protocol = RX_SPI_DEFAULT_PROTOCOL;
+    rxConfig()->spektrum_sat_bind = 0;
+    rxConfig()->midrc = 1500;
+    rxConfig()->mincheck = 1100;
+    rxConfig()->maxcheck = 1900;
+    rxConfig()->rx_min_usec = 885;          // any of first 4 channels below this value will trigger rx loss detection
+    rxConfig()->rx_max_usec = 2115;         // any of first 4 channels above this value will trigger rx loss detection
 
-    for (i = 0; i < MAX_SUPPORTED_RC_CHANNEL_COUNT; i++) {
-        rxFailsafeChannelConfiguration_t *channelFailsafeConfiguration = &masterConfig.rxConfig.failsafe_channel_configurations[i];
-        channelFailsafeConfiguration->mode = (i < NON_AUX_CHANNEL_COUNT) ? RX_FAILSAFE_MODE_AUTO : RX_FAILSAFE_MODE_HOLD;
-        channelFailsafeConfiguration->step = (i == THROTTLE) ? CHANNEL_VALUE_TO_RXFAIL_STEP(masterConfig.rxConfig.rx_min_usec) : CHANNEL_VALUE_TO_RXFAIL_STEP(masterConfig.rxConfig.midrc);
+    for (int i = 0; i < MAX_SUPPORTED_RC_CHANNEL_COUNT; i++) {
+        rxFailsafeChannelConfiguration_t *channelFailsafeConfiguration = &rxConfig()->failsafe_channel_configurations[i];
+        if (i < NON_AUX_CHANNEL_COUNT) {
+            channelFailsafeConfiguration->mode = (i == THROTTLE) ? RX_FAILSAFE_MODE_HOLD : RX_FAILSAFE_MODE_AUTO;
+        }
+        else {
+            channelFailsafeConfiguration->mode = RX_FAILSAFE_MODE_HOLD;
+        }
+
+        channelFailsafeConfiguration->step = (i == THROTTLE) ? CHANNEL_VALUE_TO_RXFAIL_STEP(rxConfig()->rx_min_usec) : CHANNEL_VALUE_TO_RXFAIL_STEP(rxConfig()->midrc);
     }
 
-    masterConfig.rxConfig.rssi_channel = 0;
-    masterConfig.rxConfig.rssi_scale = RSSI_SCALE_DEFAULT;
-    masterConfig.rxConfig.rssi_ppm_invert = 0;
-    masterConfig.rxConfig.rcSmoothing = 1;
+    rxConfig()->rssi_channel = 0;
+    rxConfig()->rssi_scale = RSSI_SCALE_DEFAULT;
+    rxConfig()->rssi_ppm_invert = 0;
+    rxConfig()->rcSmoothing = 1;
 
-    resetAllRxChannelRangeConfigurations(masterConfig.rxConfig.channelRanges);
+    resetAllRxChannelRangeConfigurations(rxConfig()->channelRanges);
 
-    masterConfig.inputFilteringMode = INPUT_FILTERING_DISABLED;
+    pwmRxConfig()->inputFilteringMode = INPUT_FILTERING_DISABLED;
 
-    masterConfig.disarm_kill_switch = 1;
-    masterConfig.auto_disarm_delay = 5;
-    masterConfig.small_angle = 25;
+    armingConfig()->disarm_kill_switch = 1;
+    armingConfig()->auto_disarm_delay = 5;
 
     resetMixerConfig(&masterConfig.mixerConfig);
-
-    // Motor/ESC/Servo
-    resetEscAndServoConfig(&masterConfig.escAndServoConfig);
-    resetFlight3DConfig(&masterConfig.flight3DConfig);
-
-#ifdef BRUSHED_MOTORS
-    masterConfig.motor_pwm_rate = BRUSHED_MOTORS_PWM_RATE;
-#else
-    masterConfig.motor_pwm_rate = BRUSHLESS_MOTORS_PWM_RATE;
+#ifdef USE_SERVOS
+    resetServoMixerConfig(&masterConfig.servoMixerConfig);
+    resetServoConfig(&masterConfig.servoConfig);
 #endif
-    masterConfig.servo_pwm_rate = 50;
+
+    resetMotorConfig(&masterConfig.motorConfig);
+    resetFlight3DConfig(&masterConfig.flight3DConfig);
 
 #ifdef GPS
     // gps/nav stuff
-    masterConfig.gpsConfig.provider = GPS_UBLOX;
-    masterConfig.gpsConfig.sbasMode = SBAS_NONE;
-    masterConfig.gpsConfig.autoConfig = GPS_AUTOCONFIG_ON;
-    masterConfig.gpsConfig.autoBaud = GPS_AUTOBAUD_ON;
-    masterConfig.gpsConfig.dynModel = GPS_DYNMODEL_AIR_1G;
+    gpsConfig()->provider = GPS_UBLOX;
+    gpsConfig()->sbasMode = SBAS_NONE;
+    gpsConfig()->autoConfig = GPS_AUTOCONFIG_ON;
+    gpsConfig()->autoBaud = GPS_AUTOBAUD_ON;
+    gpsConfig()->dynModel = GPS_DYNMODEL_AIR_1G;
 #endif
 
 #ifdef NAV
@@ -568,42 +591,54 @@ static void resetConf(void)
 
     resetSerialConfig(&masterConfig.serialConfig);
 
-    masterConfig.looptime = 2000;
+    gyroConfig()->looptime = 2000;
     masterConfig.i2c_overclock = 0;
-    masterConfig.gyroSync = 0;
-    masterConfig.gyroSyncDenominator = 2;
+    gyroConfig()->gyroSync = 0;
+    gyroConfig()->gyroSyncDenominator = 2;
+
+#ifdef ASYNC_GYRO_PROCESSING
+    masterConfig.accTaskFrequency = ACC_TASK_FREQUENCY_DEFAULT;
+    masterConfig.attitudeTaskFrequency = ATTITUDE_TASK_FREQUENCY_DEFAULT;
+    masterConfig.asyncMode = ASYNC_MODE_NONE;
+#endif
 
     resetPidProfile(&currentProfile->pidProfile);
 
     resetControlRateConfig(&masterConfig.controlRateProfiles[0]);
 
-    // for (i = 0; i < CHECKBOXITEMS; i++)
+    // for (int i = 0; i < CHECKBOXITEMS; i++)
     //     cfg.activate[i] = 0;
 
-    currentProfile->mag_declination = 0;
+    compassConfig()->mag_declination = 0;
 
     currentProfile->modeActivationOperator = MODE_OPERATOR_OR; // default is to OR multiple-channel mode activation conditions
 
     resetBarometerConfig(&masterConfig.barometerConfig);
+    resetPitotmeterConfig(&masterConfig.pitotmeterConfig);
 
     // Radio
+#ifdef RX_CHANNELS_TAER
+    parseRcChannels("TAER1234", &masterConfig.rxConfig);
+#else
     parseRcChannels("AETR1234", &masterConfig.rxConfig);
+#endif
 
     resetRcControlsConfig(&currentProfile->rcControlsConfig);
 
     currentProfile->throttle_tilt_compensation_strength = 0;      // 0-100, 0 - disabled
 
     // Failsafe Variables
-    masterConfig.failsafeConfig.failsafe_delay = 10;              // 1sec
-    masterConfig.failsafeConfig.failsafe_off_delay = 200;         // 20sec
-    masterConfig.failsafeConfig.failsafe_throttle = 1000;         // default throttle off.
-    masterConfig.failsafeConfig.failsafe_kill_switch = 0;         // default failsafe switch action is identical to rc link loss
-    masterConfig.failsafeConfig.failsafe_throttle_low_delay = 100; // default throttle low delay for "just disarm" on failsafe condition
-    masterConfig.failsafeConfig.failsafe_procedure = 0;           // default full failsafe procedure is 0: auto-landing
+    failsafeConfig()->failsafe_delay = 5;               // 0.5 sec
+    failsafeConfig()->failsafe_recovery_delay = 5;      // 0.5 seconds (plus 200ms explicit delay)
+    failsafeConfig()->failsafe_off_delay = 200;         // 20sec
+    failsafeConfig()->failsafe_throttle = 1000;         // default throttle off.
+    failsafeConfig()->failsafe_kill_switch = 0;         // default failsafe switch action is identical to rc link loss
+    failsafeConfig()->failsafe_throttle_low_delay = 100;// default throttle low delay for "just disarm" on failsafe condition
+    failsafeConfig()->failsafe_procedure = 0;           // default full failsafe procedure is 0: auto-landing, 1: drop, 2 : RTH
 
 #ifdef USE_SERVOS
     // servos
-    for (i = 0; i < MAX_SUPPORTED_SERVOS; i++) {
+    for (int i = 0; i < MAX_SUPPORTED_SERVOS; i++) {
         currentProfile->servoConf[i].min = DEFAULT_SERVO_MIN;
         currentProfile->servoConf[i].max = DEFAULT_SERVO_MAX;
         currentProfile->servoConf[i].middle = DEFAULT_SERVO_MIDDLE;
@@ -622,65 +657,46 @@ static void resetConf(void)
 #endif
 
     // custom mixer. clear by defaults.
-    for (i = 0; i < MAX_SUPPORTED_MOTORS; i++)
+    for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
         masterConfig.customMotorMixer[i].throttle = 0.0f;
+    }
 
 #ifdef LED_STRIP
-    applyDefaultColors(masterConfig.colors);
-    applyDefaultLedStripConfig(masterConfig.ledConfigs);
-    applyDefaultModeColors(masterConfig.modeColors);
-    applyDefaultSpecialColors(&(masterConfig.specialColors));
-    masterConfig.ledstrip_visual_beeper = 0;
+    applyDefaultColors(ledStripConfig()->colors);
+    applyDefaultLedStripConfig(ledStripConfig()->ledConfigs);
+    applyDefaultModeColors(ledStripConfig()->modeColors);
+    applyDefaultSpecialColors(&(ledStripConfig()->specialColors));
+    ledStripConfig()->ledstrip_visual_beeper = 0;
 #endif
 
 #ifdef BLACKBOX
 #ifdef ENABLE_BLACKBOX_LOGGING_ON_SPIFLASH_BY_DEFAULT
     featureSet(FEATURE_BLACKBOX);
-    masterConfig.blackbox_device = BLACKBOX_DEVICE_FLASH;
+    blackboxConfig()->device = BLACKBOX_DEVICE_FLASH;
 #else
-    masterConfig.blackbox_device = BLACKBOX_DEVICE_SERIAL;
+    blackboxConfig()->device = BLACKBOX_DEVICE_SERIAL;
 #endif
-    masterConfig.blackbox_rate_num = 1;
-    masterConfig.blackbox_rate_denom = 1;
-#endif
-
-    // alternative defaults settings for COLIBRI RACE targets
-#if defined(COLIBRI_RACE)
-    masterConfig.looptime = 1000;
-
-    masterConfig.rxConfig.rcmap[0] = 1;
-    masterConfig.rxConfig.rcmap[1] = 2;
-    masterConfig.rxConfig.rcmap[2] = 3;
-    masterConfig.rxConfig.rcmap[3] = 0;
-    masterConfig.rxConfig.rcmap[4] = 4;
-    masterConfig.rxConfig.rcmap[5] = 5;
-    masterConfig.rxConfig.rcmap[6] = 6;
-    masterConfig.rxConfig.rcmap[7] = 7;
-
-    featureSet(FEATURE_ONESHOT125);
-    featureSet(FEATURE_VBAT);
-    featureSet(FEATURE_LED_STRIP);
-    featureSet(FEATURE_FAILSAFE);
+    blackboxConfig()->rate_num = 1;
+    blackboxConfig()->rate_denom = 1;
 #endif
 
     // alternative defaults settings for ALIENFLIGHTF1 and ALIENFLIGHTF3 targets
 #ifdef ALIENFLIGHTF1
 #ifdef ALIENFLIGHTF3
-    masterConfig.serialConfig.portConfigs[2].functionMask = FUNCTION_RX_SERIAL;
-    masterConfig.batteryConfig.vbatscale = 20;
+    serialConfig()->portConfigs[2].functionMask = FUNCTION_RX_SERIAL;
+    batteryConfig()->vbatscale = 20;
 #else
-    masterConfig.serialConfig.portConfigs[1].functionMask = FUNCTION_RX_SERIAL;
+    serialConfig()->portConfigs[1].functionMask = FUNCTION_RX_SERIAL;
 #endif
-    masterConfig.rxConfig.serialrx_provider = 1;
-    masterConfig.rxConfig.spektrum_sat_bind = 5;
-    masterConfig.escAndServoConfig.minthrottle = 1000;
-    masterConfig.escAndServoConfig.maxthrottle = 2000;
-    masterConfig.motor_pwm_rate = 32000;
+    rxConfig()->spektrum_sat_bind = 5;
+    motorConfig()->minthrottle = 1000;
+    motorConfig()->maxthrottle = 2000;
+    motorConfig()->motorPwmRate = 32000;
     masterConfig.looptime = 2000;
     currentProfile->pidProfile.P8[ROLL] = 36;
     currentProfile->pidProfile.P8[PITCH] = 36;
-    masterConfig.failsafeConfig.failsafe_delay = 2;
-    masterConfig.failsafeConfig.failsafe_off_delay = 0;
+    failsafeConfig()->failsafe_delay = 2;
+    failsafeConfig()->failsafe_off_delay = 0;
     currentControlRateProfile->rates[FD_PITCH] = CONTROL_RATE_CONFIG_ROLL_PITCH_RATE_DEFAULT;
     currentControlRateProfile->rates[FD_ROLL] = CONTROL_RATE_CONFIG_ROLL_PITCH_RATE_DEFAULT;
     currentControlRateProfile->rates[FD_YAW] = CONTROL_RATE_CONFIG_YAW_RATE_DEFAULT;
@@ -735,73 +751,43 @@ static void resetConf(void)
     masterConfig.customMotorMixer[7].yaw = -1.0f;
 #endif
 
+#if defined(TARGET_CONFIG)
+    targetConfiguration(&masterConfig);
+#endif
+
     // copy first profile into remaining profile
-    for (i = 1; i < MAX_PROFILE_COUNT; i++) {
+    for (int i = 1; i < MAX_PROFILE_COUNT; i++) {
         memcpy(&masterConfig.profile[i], currentProfile, sizeof(profile_t));
     }
 
     // copy first control rate config into remaining profile
-    for (i = 1; i < MAX_CONTROL_RATE_PROFILE_COUNT; i++) {
+    for (int i = 1; i < MAX_CONTROL_RATE_PROFILE_COUNT; i++) {
         memcpy(&masterConfig.controlRateProfiles[i], currentControlRateProfile, sizeof(controlRateConfig_t));
     }
 
-    for (i = 1; i < MAX_PROFILE_COUNT; i++) {
+    for (int i = 1; i < MAX_PROFILE_COUNT; i++) {
         masterConfig.profile[i].defaultRateProfileIndex = i % MAX_CONTROL_RATE_PROFILE_COUNT;
     }
 }
 
-static uint8_t calculateChecksum(const uint8_t *data, uint32_t length)
-{
-    uint8_t checksum = 0;
-    const uint8_t *byteOffset;
-
-    for (byteOffset = data; byteOffset < (data + length); byteOffset++)
-        checksum ^= *byteOffset;
-    return checksum;
-}
-
-static bool isEEPROMContentValid(void)
-{
-    const master_t *temp = (const master_t *) CONFIG_START_FLASH_ADDRESS;
-    uint8_t checksum = 0;
-
-    // check version number
-    if (EEPROM_CONF_VERSION != temp->version)
-        return false;
-
-    // check size and magic numbers
-    if (temp->size != sizeof(master_t) || temp->magic_be != 0xBE || temp->magic_ef != 0xEF)
-        return false;
-
-    // verify integrity of temporary copy
-    checksum = calculateChecksum((const uint8_t *) temp, sizeof(master_t));
-    if (checksum != 0)
-        return false;
-
-    // looks good, let's roll!
-    return true;
-}
-
 void activateControlRateConfig(void)
 {
-    generateThrottleCurve(currentControlRateProfile, &masterConfig.escAndServoConfig);
+    generateThrottleCurve(currentControlRateProfile, &masterConfig.motorConfig);
 }
 
 void activateConfig(void)
 {
-    static imuRuntimeConfig_t imuRuntimeConfig;
-
     activateControlRateConfig();
 
     resetAdjustmentStates();
 
     useRcControlsConfig(
         currentProfile->modeActivationConditions,
-        &masterConfig.escAndServoConfig,
+        &masterConfig.motorConfig,
         &currentProfile->pidProfile
     );
 
-    useGyroConfig(&masterConfig.gyroConfig, currentProfile->pidProfile.gyro_soft_lpf_hz);
+    gyroConfig()->gyro_soft_lpf_hz = currentProfile->pidProfile.gyro_soft_lpf_hz;
 
 #ifdef TELEMETRY
     telemetryUseConfig(&masterConfig.telemetryConfig);
@@ -809,28 +795,15 @@ void activateConfig(void)
 
     useFailsafeConfig(&masterConfig.failsafeConfig);
 
-    setAccelerationZero(&masterConfig.accZero);
-    setAccelerationGain(&masterConfig.accGain);
+    setAccelerationCalibrationValues(&accelerometerConfig()->accZero, &accelerometerConfig()->accGain);
     setAccelerationFilter(currentProfile->pidProfile.acc_soft_lpf_hz);
 
-    mixerUseConfigs(
+    mixerUseConfigs(&masterConfig.flight3DConfig, &masterConfig.motorConfig, &masterConfig.mixerConfig, &masterConfig.rxConfig);
 #ifdef USE_SERVOS
-        currentProfile->servoConf,
-        &currentProfile->gimbalConfig,
+    servosUseConfigs(&masterConfig.servoMixerConfig, currentProfile->servoConf, &currentProfile->gimbalConfig, &masterConfig.rxConfig);
 #endif
-        &masterConfig.flight3DConfig,
-        &masterConfig.escAndServoConfig,
-        &masterConfig.mixerConfig,
-        &masterConfig.rxConfig
-    );
 
-    imuRuntimeConfig.dcm_kp_acc = masterConfig.dcm_kp_acc / 10000.0f;
-    imuRuntimeConfig.dcm_ki_acc = masterConfig.dcm_ki_acc / 10000.0f;
-    imuRuntimeConfig.dcm_kp_mag = masterConfig.dcm_kp_mag / 10000.0f;
-    imuRuntimeConfig.dcm_ki_mag = masterConfig.dcm_ki_mag / 10000.0f;
-    imuRuntimeConfig.small_angle = masterConfig.small_angle;
-
-    imuConfigure(&imuRuntimeConfig, &currentProfile->pidProfile);
+    imuConfigure(&masterConfig.imuConfig, &currentProfile->pidProfile);
 
     pidInit();
 
@@ -840,75 +813,63 @@ void activateConfig(void)
     navigationUseRcControlsConfig(&currentProfile->rcControlsConfig);
     navigationUseRxConfig(&masterConfig.rxConfig);
     navigationUseFlight3DConfig(&masterConfig.flight3DConfig);
-    navigationUseEscAndServoConfig(&masterConfig.escAndServoConfig);
+    navigationUsemotorConfig(&masterConfig.motorConfig);
 #endif
 
 #ifdef BARO
     useBarometerConfig(&masterConfig.barometerConfig);
 #endif
+#ifdef PITOT
+    usePitotmeterConfig(&masterConfig.pitotmeterConfig);
+#endif
 }
 
-static void validateAndFixConfig(void)
+void validateAndFixConfig(void)
 {
-    if (!(featureConfigured(FEATURE_RX_PARALLEL_PWM) || featureConfigured(FEATURE_RX_PPM) || featureConfigured(FEATURE_RX_SERIAL) || featureConfigured(FEATURE_RX_MSP) || featureConfigured(FEATURE_RX_NRF24))) {
-         featureSet(DEFAULT_RX_FEATURE);
-     }
+    // Disable unused features
+    featureClear(FEATURE_UNUSED_1 | FEATURE_UNUSED_2);
 
-     if (featureConfigured(FEATURE_RX_PPM)) {
-         featureClear(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_MSP | FEATURE_RX_NRF24);
-     }
-
-     if (featureConfigured(FEATURE_RX_MSP)) {
-         featureClear(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_PPM | FEATURE_RX_NRF24);
-     }
-
-     if (featureConfigured(FEATURE_RX_SERIAL)) {
-         featureClear(FEATURE_RX_PARALLEL_PWM | FEATURE_RX_MSP | FEATURE_RX_PPM | FEATURE_RX_NRF24);
-     }
-
-     if (featureConfigured(FEATURE_RX_NRF24)) {
-         featureClear(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_PPM | FEATURE_RX_MSP);
-     }
-
-#if defined(NAV)
-    // Ensure sane values of navConfig settings
-    validateNavConfig(&masterConfig.navConfig);
+#ifdef DISABLE_RX_PWM_FEATURE
+    if (featureConfigured(FEATURE_RX_PARALLEL_PWM)) {
+        featureClear(FEATURE_RX_PARALLEL_PWM);
+    }
 #endif
 
-    if (featureConfigured(FEATURE_SOFTSPI)) {
-        featureClear(FEATURE_RX_PPM | FEATURE_RX_PARALLEL_PWM | FEATURE_SOFTSERIAL | FEATURE_VBAT);
-#if defined(STM32F10X)
-        featureClear(FEATURE_LED_STRIP);
-        // rssi adc needs the same ports
-        featureClear(FEATURE_RSSI_ADC);
-        // current meter needs the same ports
-        if (masterConfig.batteryConfig.currentMeterType == CURRENT_SENSOR_ADC) {
-            featureClear(FEATURE_CURRENT_METER);
-        }
-#endif
+    if (!(featureConfigured(FEATURE_RX_PARALLEL_PWM) || featureConfigured(FEATURE_RX_PPM) || featureConfigured(FEATURE_RX_SERIAL) || featureConfigured(FEATURE_RX_MSP) || featureConfigured(FEATURE_RX_SPI))) {
+        featureSet(DEFAULT_RX_FEATURE);
+    }
+
+    if (featureConfigured(FEATURE_RX_PPM)) {
+        featureClear(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_MSP | FEATURE_RX_SPI);
+    }
+
+    if (featureConfigured(FEATURE_RX_MSP)) {
+        featureClear(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_PPM | FEATURE_RX_SPI);
+    }
+
+    if (featureConfigured(FEATURE_RX_SERIAL)) {
+        featureClear(FEATURE_RX_PARALLEL_PWM | FEATURE_RX_MSP | FEATURE_RX_PPM | FEATURE_RX_SPI);
+    }
+
+    if (featureConfigured(FEATURE_RX_SPI)) {
+        featureClear(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_PPM | FEATURE_RX_MSP);
     }
 
     if (featureConfigured(FEATURE_RX_PARALLEL_PWM)) {
-         featureClear(FEATURE_RX_SERIAL | FEATURE_RX_MSP | FEATURE_RX_PPM | FEATURE_RX_NRF24);
+        featureClear(FEATURE_RX_SERIAL | FEATURE_RX_MSP | FEATURE_RX_PPM | FEATURE_RX_SPI);
 #if defined(STM32F10X)
         // rssi adc needs the same ports
         featureClear(FEATURE_RSSI_ADC);
         // current meter needs the same ports
-        if (masterConfig.batteryConfig.currentMeterType == CURRENT_SENSOR_ADC) {
+        if (batteryConfig()->currentMeterType == CURRENT_SENSOR_ADC) {
             featureClear(FEATURE_CURRENT_METER);
         }
-
 #if defined(CC3D)
         // There is a timer clash between PWM RX pins and motor output pins - this forces us to have same timer tick rate for these timers
         // which is only possible when using brushless motors w/o oneshot (timer tick rate is PWM_TIMER_MHZ)
-
         // On CC3D OneShot is incompatible with PWM RX
-        featureClear(FEATURE_ONESHOT125);
-
-        // Brushed motors on CC3D are not possible when using PWM RX
-        if (masterConfig.motor_pwm_rate > BRUSHLESS_MOTORS_PWM_RATE) {
-            masterConfig.motor_pwm_rate = BRUSHLESS_MOTORS_PWM_RATE;
-        }
+        motorConfig()->motorPwmProtocol = PWM_TYPE_STANDARD;
+        motorConfig()->motorPwmRate = BRUSHLESS_MOTORS_PWM_RATE;
 #endif
 #endif
 
@@ -921,16 +882,53 @@ static void validateAndFixConfig(void)
         featureClear(FEATURE_SOFTSERIAL);
     }
 
+#ifdef USE_SOFTSPI
+    if (featureConfigured(FEATURE_SOFTSPI)) {
+        featureClear(FEATURE_RX_PPM | FEATURE_RX_PARALLEL_PWM | FEATURE_SOFTSERIAL | FEATURE_VBAT);
+#if defined(STM32F10X)
+        featureClear(FEATURE_LED_STRIP);
+        // rssi adc needs the same ports
+        featureClear(FEATURE_RSSI_ADC);
+        // current meter needs the same ports
+        if (batteryConfig()->currentMeterType == CURRENT_SENSOR_ADC) {
+            featureClear(FEATURE_CURRENT_METER);
+        }
+#endif
+    }
+#endif
+
+#ifdef ASYNC_GYRO_PROCESSING
+    /*
+     * When async processing mode is enabled, gyroSync has to be forced to "ON"
+     */
+    if (getAsyncMode() != ASYNC_MODE_NONE) {
+        gyroConfig()->gyroSync = 1;
+    }
+#endif
+
 #ifdef STM32F10X
     // avoid overloading the CPU on F1 targets when using gyro sync and GPS.
-    if (masterConfig.gyroSync && masterConfig.gyroSyncDenominator < 2 && featureConfigured(FEATURE_GPS)) {
-        masterConfig.gyroSyncDenominator = 2;
-    }
 
-    // avoid overloading the CPU when looptime < 2000 and GPS
-    if (masterConfig.looptime && featureConfigured(FEATURE_GPS)) {
-        masterConfig.looptime = 2000;
+    if (featureConfigured(FEATURE_GPS)) {
+        // avoid overloading the CPU when looptime < 2000 and GPS
+
+        uint8_t denominatorLimit = 2;
+
+        if (gyroConfig()->gyro_lpf == 0) {
+            denominatorLimit = 16;
+        }
+
+        if (gyroConfig()->gyroSyncDenominator < denominatorLimit) {
+            gyroConfig()->gyroSyncDenominator = denominatorLimit;
+        }
+
+        if (gyroConfig()->looptime < 2000) {
+            gyroConfig()->looptime = 2000;
+        }
+
     }
+#else
+
 #endif
 
 #if defined(LED_STRIP) && (defined(USE_SOFTSERIAL1) || defined(USE_SOFTSERIAL2))
@@ -948,29 +946,22 @@ static void validateAndFixConfig(void)
     }
 #endif
 
-#if defined(NAZE) && defined(SONAR)
-    if (featureConfigured(FEATURE_RX_PARALLEL_PWM) && featureConfigured(FEATURE_SONAR) && featureConfigured(FEATURE_CURRENT_METER) && masterConfig.batteryConfig.currentMeterType == CURRENT_SENSOR_ADC) {
+#if defined(NAZE) && defined(SONAR) && defined(USE_SONAR_ONBOARD)
+    if (featureConfigured(FEATURE_RX_PARALLEL_PWM) && featureConfigured(FEATURE_SONAR) && featureConfigured(FEATURE_CURRENT_METER) && batteryConfig()->currentMeterType == CURRENT_SENSOR_ADC) {
         featureClear(FEATURE_CURRENT_METER);
     }
 #endif
 
 #if defined(OLIMEXINO) && defined(SONAR)
-    if (feature(FEATURE_SONAR) && feature(FEATURE_CURRENT_METER) && masterConfig.batteryConfig.currentMeterType == CURRENT_SENSOR_ADC) {
+    if (feature(FEATURE_SONAR) && feature(FEATURE_CURRENT_METER) && batteryConfig()->currentMeterType == CURRENT_SENSOR_ADC) {
         featureClear(FEATURE_CURRENT_METER);
     }
 #endif
 
-#if defined(CC3D) && defined(DISPLAY) && defined(USE_USART3)
-    if (doesConfigurationUsePort(SERIAL_PORT_USART3) && feature(FEATURE_DISPLAY)) {
-        featureClear(FEATURE_DISPLAY);
+#if defined(CC3D) && defined(USE_DASHBOARD) && defined(USE_UART3)
+    if (doesConfigurationUsePort(SERIAL_PORT_USART3) && feature(FEATURE_DASHBOARD)) {
+        featureClear(FEATURE_DASHBOARD);
     }
-#endif
-
-#ifdef STM32F303xC
-    // hardware supports serial port inversion, make users life easier for those that want to connect SBus RX's
-#ifdef TELEMETRY
-    masterConfig.telemetryConfig.telemetry_inversion = 1;
-#endif
 #endif
 
 #if defined(CC3D)
@@ -992,11 +983,8 @@ static void validateAndFixConfig(void)
 #endif // CC3D_PPM1
 #endif // CC3D
 
-#if defined(COLIBRI_RACE)
-    masterConfig.serialConfig.portConfigs[0].functionMask = FUNCTION_MSP;
-    if(featureConfigured(FEATURE_RX_SERIAL)) {
-        masterConfig.serialConfig.portConfigs[2].functionMask = FUNCTION_RX_SERIAL;
-    }
+#ifndef USE_PMW_SERVO_DRIVER
+    featureClear(FEATURE_PWM_SERVO_DRIVER);
 #endif
 
     useRxConfig(&masterConfig.rxConfig);
@@ -1010,9 +998,40 @@ static void validateAndFixConfig(void)
     /*
      * If provided predefined mixer setup is disabled, fallback to default one
      */
-     if (!isMixerEnabled(masterConfig.mixerMode)) {
-         masterConfig.mixerMode = DEFAULT_MIXER;
-     }
+    if (!isMixerEnabled(mixerConfig()->mixerMode)) {
+        mixerConfig()->mixerMode = DEFAULT_MIXER;
+    }
+
+#if defined(NAV)
+    // Ensure sane values of navConfig settings
+    validateNavConfig(&masterConfig.navConfig);
+#endif
+
+    /* Limitations of different protocols */
+#ifdef BRUSHED_MOTORS
+    motorConfig()->motorPwmRate = constrain(motorConfig()->motorPwmRate, 500, 32000);
+#else
+    switch (motorConfig()->motorPwmProtocol) {
+    case PWM_TYPE_STANDARD: // Limited to 490 Hz
+        motorConfig()->motorPwmRate = MIN(motorConfig()->motorPwmRate, 490);
+        break;
+
+    case PWM_TYPE_ONESHOT125:   // Limited to 3900 Hz
+        motorConfig()->motorPwmRate = MIN(motorConfig()->motorPwmRate, 3900);
+        break;
+
+    case PWM_TYPE_ONESHOT42:    // 2-8 kHz
+        motorConfig()->motorPwmRate = constrain(motorConfig()->motorPwmRate, 2000, 8000);
+        break;
+
+    case PWM_TYPE_MULTISHOT:    // 2-16 kHz
+        motorConfig()->motorPwmRate = constrain(motorConfig()->motorPwmRate, 2000, 16000);
+        break;
+    case PWM_TYPE_BRUSHED:      // 500Hz - 32kHz
+        motorConfig()->motorPwmRate = constrain(motorConfig()->motorPwmRate, 500, 32000);
+        break;
+    }
+#endif
 }
 
 void applyAndSaveBoardAlignmentDelta(int16_t roll, int16_t pitch)
@@ -1022,107 +1041,12 @@ void applyAndSaveBoardAlignmentDelta(int16_t roll, int16_t pitch)
     saveConfigAndNotify();
 }
 
-void initEEPROM(void)
-{
-}
-
-void readEEPROM(void)
-{
-    // Sanity check
-    if (!isEEPROMContentValid())
-        failureMode(FAILURE_INVALID_EEPROM_CONTENTS);
-
-    suspendRxSignal();
-
-    // Read flash
-    memcpy(&masterConfig, (char *) CONFIG_START_FLASH_ADDRESS, sizeof(master_t));
-
-    if (masterConfig.current_profile_index > MAX_PROFILE_COUNT - 1) // sanity check
-        masterConfig.current_profile_index = 0;
-
-    setProfile(masterConfig.current_profile_index);
-
-    if (currentProfile->defaultRateProfileIndex > MAX_CONTROL_RATE_PROFILE_COUNT - 1) // sanity check
-        currentProfile->defaultRateProfileIndex = 0;
-
-    setControlRateProfile(currentProfile->defaultRateProfileIndex);
-
-    validateAndFixConfig();
-    activateConfig();
-
-    resumeRxSignal();
-}
 
 void readEEPROMAndNotify(void)
 {
     // re-read written data
     readEEPROM();
     beeperConfirmationBeeps(1);
-}
-
-void writeEEPROM(void)
-{
-    // Generate compile time error if the config does not fit in the reserved area of flash.
-    BUILD_BUG_ON(sizeof(master_t) > FLASH_TO_RESERVE_FOR_CONFIG);
-
-    FLASH_Status status = 0;
-    uint32_t wordOffset;
-    int8_t attemptsRemaining = 3;
-
-    suspendRxSignal();
-
-    // prepare checksum/version constants
-    masterConfig.version = EEPROM_CONF_VERSION;
-    masterConfig.size = sizeof(master_t);
-    masterConfig.magic_be = 0xBE;
-    masterConfig.magic_ef = 0xEF;
-    masterConfig.chk = 0; // erase checksum before recalculating
-    masterConfig.chk = calculateChecksum((const uint8_t *) &masterConfig, sizeof(master_t));
-
-    // write it
-    FLASH_Unlock();
-    while (attemptsRemaining--) {
-#ifdef STM32F40_41xxx
-        FLASH_ClearFlag(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
-#endif
-#ifdef STM32F303
-        FLASH_ClearFlag(FLASH_FLAG_EOP | FLASH_FLAG_PGERR | FLASH_FLAG_WRPERR);
-#endif
-#ifdef STM32F10X
-        FLASH_ClearFlag(FLASH_FLAG_EOP | FLASH_FLAG_PGERR | FLASH_FLAG_WRPRTERR);
-#endif
-        for (wordOffset = 0; wordOffset < sizeof(master_t); wordOffset += 4) {
-            if (wordOffset % FLASH_PAGE_SIZE == 0) {
-#if defined(STM32F40_41xxx)
-                status = FLASH_EraseSector(FLASH_Sector_8, VoltageRange_3); //0x08080000 to 0x080A0000
-#elif defined (STM32F411xE)
-                status = FLASH_EraseSector(FLASH_Sector_7, VoltageRange_3); //0x08060000 to 0x08080000
-#else
-                status = FLASH_ErasePage(CONFIG_START_FLASH_ADDRESS + wordOffset);
-#endif
-                if (status != FLASH_COMPLETE) {
-                    break;
-                }
-            }
-
-            status = FLASH_ProgramWord(CONFIG_START_FLASH_ADDRESS + wordOffset,
-                    *(uint32_t *) ((char *) &masterConfig + wordOffset));
-            if (status != FLASH_COMPLETE) {
-                break;
-            }
-        }
-        if (status == FLASH_COMPLETE) {
-            break;
-        }
-    }
-    FLASH_Lock();
-
-    // Flash write failed - just die now
-    if (status != FLASH_COMPLETE || !isEEPROMContentValid()) {
-        failureMode(FAILURE_FLASH_WRITE_FAILED);
-    }
-
-    resumeRxSignal();
 }
 
 void ensureEEPROMContainsValidData(void)
@@ -1161,72 +1085,6 @@ void changeControlRateProfile(uint8_t profileIndex)
     }
     setControlRateProfile(profileIndex);
     activateControlRateConfig();
-}
-
-void handleOneshotFeatureChangeOnRestart(void)
-{
-    // Shutdown PWM on all motors prior to soft restart
-    StopPwmAllMotors();
-    delay(50);
-    // Apply additional delay when OneShot125 feature changed from on to off state
-    if (feature(FEATURE_ONESHOT125) && !featureConfigured(FEATURE_ONESHOT125)) {
-        delay(ONESHOT_FEATURE_CHANGED_DELAY_ON_BOOT_MS);
-    }
-}
-
-void latchActiveFeatures()
-{
-    activeFeaturesLatch = masterConfig.enabledFeatures;
-}
-
-bool featureConfigured(uint32_t mask)
-{
-    return masterConfig.enabledFeatures & mask;
-}
-
-bool feature(uint32_t mask)
-{
-    return activeFeaturesLatch & mask;
-}
-
-void featureSet(uint32_t mask)
-{
-    masterConfig.enabledFeatures |= mask;
-}
-
-void featureClear(uint32_t mask)
-{
-    masterConfig.enabledFeatures &= ~(mask);
-}
-
-void featureClearAll()
-{
-    masterConfig.enabledFeatures = 0;
-}
-
-uint32_t featureMask(void)
-{
-    return masterConfig.enabledFeatures;
-}
-
-void persistentFlagClearAll()
-{
-    masterConfig.persistentFlags = 0;
-}
-
-bool persistentFlag(uint8_t mask)
-{
-    return masterConfig.persistentFlags & mask;
-}
-
-void persistentFlagSet(uint8_t mask)
-{
-    masterConfig.persistentFlags |= mask;
-}
-
-void persistentFlagClear(uint8_t mask)
-{
-    masterConfig.persistentFlags &= ~(mask);
 }
 
 void beeperOffSet(uint32_t mask)

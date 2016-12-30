@@ -14,41 +14,26 @@
  * You should have received a copy of the GNU General Public License
  * along with Cleanflight.  If not, see <http://www.gnu.org/licenses/>.
  */
+
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdlib.h>
 
 #include "platform.h"
-#include "build/build_config.h"
 
+#include "sensor.h"
+#include "accgyro.h"
+#include "gyro_sync.h"
 
-#include "common/axis.h"
-#include "common/maths.h"
-
-#include "drivers/sensor.h"
-#include "drivers/accgyro.h"
-#include "drivers/gyro_sync.h"
-
-#include "fc/runtime_config.h"
-
-#include "config/config.h"
-
-extern gyro_t gyro;
-
-uint32_t targetLooptime;
 static uint8_t mpuDividerDrops;
 
-bool getMpuDataStatus(gyro_t *gyro)
+bool gyroSyncCheckUpdate(gyroDev_t *gyro)
 {
-    return gyro->intStatus();
+    if (!gyro->intStatus)
+        return false;
+    return gyro->intStatus(gyro);
 }
 
-bool gyroSyncCheckUpdate(void)
-{
-    return getMpuDataStatus(&gyro);
-}
-
-void gyroSetSampleRate(uint32_t looptime, uint8_t lpf, uint8_t gyroSync, uint8_t gyroSyncDenominator)
+uint32_t gyroSetSampleRate(uint32_t looptime, uint8_t lpf, uint8_t gyroSync, uint8_t gyroSyncDenominator)
 {
     if (gyroSync) {
         int gyroSamplePeriod;
@@ -60,11 +45,11 @@ void gyroSetSampleRate(uint32_t looptime, uint8_t lpf, uint8_t gyroSync, uint8_t
         }
 
         mpuDividerDrops  = gyroSyncDenominator - 1;
-        targetLooptime = gyroSyncDenominator * gyroSamplePeriod;
+        looptime = gyroSyncDenominator * gyroSamplePeriod;
     } else {
         mpuDividerDrops = 0;
-        targetLooptime = looptime;
     }
+    return looptime;
 }
 
 uint8_t gyroMPU6xxxCalculateDivider(void)

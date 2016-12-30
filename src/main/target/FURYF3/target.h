@@ -133,8 +133,8 @@
 #define USE_I2C
 #define I2C_DEVICE              (I2CDEV_1) // SDA (PB9/AF4), SCL (PB8/AF4)
 
-#define I2C1_SCL_PIN            PB8
-#define I2C1_SDA_PIN            PB9
+#define I2C1_SCL                PB8
+#define I2C1_SDA                PB9
 
 #define BOARD_HAS_VOLTAGE_DIVIDER
 #define USE_ADC
@@ -156,11 +156,6 @@
 #define SONAR_TRIGGER_PIN       PB0 // RC_CH7 (PB0) - only 3.3v ( add a 1K Ohms resistor )
 #define SONAR_ECHO_PIN          PB1 // RC_CH8 (PB1) - only 3.3v ( add a 1K Ohms resistor )
 
-#define NAV
-#define NAV_AUTO_MAG_DECLINATION
-#define NAV_GPS_GLITCH_DETECTION
-#define NAV_MAX_WAYPOINTS               60
-
 #define DEFAULT_FEATURES        FEATURE_BLACKBOX
 #define DEFAULT_RX_FEATURE      FEATURE_RX_PPM
 
@@ -169,6 +164,9 @@
 #define BIND_PIN                PB11
 
 #define USE_SERIAL_4WAY_BLHELI_INTERFACE
+
+// Number of available PWM outputs
+#define MAX_PWM_OUTPUT_PORTS    6
 
 // IO - stm32f303cc in 48pin package
 #define TARGET_IO_PORTA         0xffff

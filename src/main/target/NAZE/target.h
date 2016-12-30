@@ -36,12 +36,11 @@
 #define INVERTER_USART          USART2
 
 #define USE_EXTI
-#define MAG_INT_EXTI PC14
-#define EXTI_CALLBACK_HANDLER_COUNT 3 // MPU data ready, MAG data ready, BMP085 EOC
-//#define DEBUG_MPU_DATA_READY_INTERRUPT
+#define MAG_INT_EXTI            PC14
 #define USE_MPU_DATA_READY_SIGNAL
+//#define USE_MAG_DATA_READY_SIGNAL
+//#define DEBUG_MPU_DATA_READY_INTERRUPT
 //#define DEBUG_MAG_DATA_READY_INTERRUPT
-#define USE_MAG_DATA_READY_SIGNAL
 
 // SPI2
 // PB15 28 SPI2_MOSI
@@ -71,10 +70,10 @@
 #define USE_FLASH_M25P16
 
 #define GYRO
-#define USE_GYRO_MPU3050
+//#define USE_GYRO_MPU3050
 #define USE_GYRO_MPU6050
-#define USE_GYRO_MPU6500
-#define USE_GYRO_SPI_MPU6500
+//#define USE_GYRO_MPU6500
+//#define USE_GYRO_SPI_MPU6500
 
 #define GYRO_MPU3050_ALIGN      CW0_DEG
 #define GYRO_MPU6050_ALIGN      CW0_DEG
@@ -85,8 +84,8 @@
 //#define USE_ACC_BMA280
 //#define USE_ACC_MMA8452
 #define USE_ACC_MPU6050
-#define USE_ACC_MPU6500
-#define USE_ACC_SPI_MPU6500
+//#define USE_ACC_MPU6500
+//#define USE_ACC_SPI_MPU6500
 
 #define ACC_ADXL345_ALIGN       CW270_DEG
 #define ACC_MPU6050_ALIGN       CW0_DEG
@@ -96,8 +95,8 @@
 
 #define BARO
 #define USE_BARO_MS5611 // needed for Flip32 board
-#define USE_BARO_BMP085
-#define USE_BARO_BMP280
+//#define USE_BARO_BMP085
+//#define USE_BARO_BMP280
 
 #define MAG
 #define USE_MAG_HMC5883
@@ -105,8 +104,9 @@
 //#define USE_MAG_MAG3110
 #define MAG_HMC5883_ALIGN       CW180_DEG
 
-//#define SONAR
+#define SONAR
 //#define USE_SONAR_SRF10
+#define USE_SONAR_I2C
 #define SONAR_TRIGGER_PIN       PB0
 #define SONAR_ECHO_PIN          PB1
 #define SONAR_TRIGGER_PIN_PWM   PB8
@@ -139,6 +139,7 @@
 
 //#define USE_RX_NRF24
 #ifdef USE_RX_NRF24
+#define USE_RX_SPI
 
 #define USE_RX_CX10
 #define USE_RX_H8_3D
@@ -152,7 +153,8 @@
 //#define NRF24_DEFAULT_PROTOCOL  NRF24RX_V202_1M
 
 #define USE_SOFTSPI
-#define USE_NRF24_SOFTSPI
+#define USE_RX_SOFTSPI
+
 // RC pinouts
 // RC1              GND
 // RC2              power
@@ -166,13 +168,13 @@
 // RC10 PB1/TIM3    MOSI /softserial2 TX / sonar echo / current
 
 // Nordic Semiconductor uses 'CSN', STM uses 'NSS'
-#define NRF24_CE_PIN                    PA1
-#define NRF24_CE_GPIO_CLK_PERIPHERAL    RCC_APB2Periph_GPIOA
-#define NRF24_CSN_PIN                   PA6
-#define NRF24_CSN_GPIO_CLK_PERIPHERAL   RCC_APB2Periph_GPIOA
-#define NRF24_SCK_PIN                   PA7
-#define NRF24_MOSI_PIN                  PB1
-#define NRF24_MISO_PIN                  PB0
+#define RX_CE_PIN                   PA1
+#define RX_CE_GPIO_CLK_PERIPHERAL   RCC_APB2Periph_GPIOA
+#define RX_NSS_PIN                  PA6
+#define RX_NSS_GPIO_CLK_PERIPHERAL  RCC_APB2Periph_GPIOA
+#define RX_SCK_PIN                  PA7
+#define RX_MOSI_PIN                 PB1
+#define RX_MISO_PIN                 PB0
 #endif // USE_NRF24
 
 #define USE_ADC
@@ -181,10 +183,8 @@
 #define RSSI_ADC_PIN            PA1
 #define EXTERNAL1_ADC_PIN       PA5
 
-#define NAV
 //#define NAV_AUTO_MAG_DECLINATION
 #define NAV_GPS_GLITCH_DETECTION
-#define NAV_MAX_WAYPOINTS       30
 
 //#define LED_STRIP
 #define WS2811_TIMER                    TIM3
@@ -194,9 +194,9 @@
 
 #define SPEKTRUM_BIND
 // USART2, PA3
-#define BIND_PIN                        PA3
+#define BIND_PIN                PA3
 
-#define USE_SERIAL_4WAY_BLHELI_INTERFACE
+//#define USE_SERIAL_4WAY_BLHELI_INTERFACE
 
 #define TARGET_MOTOR_COUNT      6
 #define DISABLE_UNCOMMON_MIXERS
@@ -204,14 +204,8 @@
 #define DEFAULT_FEATURES        FEATURE_VBAT
 #define DEFAULT_RX_FEATURE      FEATURE_RX_PPM
 
-// Disable HOTT and S.Port telemetry
-#undef TELEMETRY_HOTT
-#undef TELEMETRY_SMARTPORT
-
-// Disable all GPS protocols except UBLOX
-#undef GPS_PROTO_NMEA
-#undef GPS_PROTO_I2C_NAV
-#undef GPS_PROTO_NAZA
+// Number of available PWM outputs
+#define MAX_PWM_OUTPUT_PORTS    10
 
 // IO - assuming all IOs on 48pin package
 #define TARGET_IO_PORTA         0xffff
@@ -220,3 +214,16 @@
 
 #define USABLE_TIMER_CHANNEL_COUNT 14
 #define USED_TIMERS             ( TIM_N(1) | TIM_N(2) | TIM_N(3) | TIM_N(4) )
+
+
+#undef TELEMETRY_FRSKY
+#undef TELEMETRY_HOTT
+#undef TELEMETRY_IBUS
+#undef TELEMETRY_MAVLINK
+#undef TELEMETRY_SMARTPORT
+
+#undef GPS_PROTO_NMEA
+#undef GPS_PROTO_I2C_NAV
+#undef GPS_PROTO_NAZA
+#undef GPS_PROTO_UBLOX
+#undef USE_SERVOS

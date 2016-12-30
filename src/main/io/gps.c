@@ -28,30 +28,27 @@
 
 #include "build/debug.h"
 
-
 #include "common/maths.h"
 #include "common/axis.h"
 #include "common/utils.h"
 
-#include "drivers/system.h"
-#include "drivers/serial.h"
-#include "drivers/serial_uart.h"
-#include "drivers/gpio.h"
-#include "drivers/light_led.h"
-#include "drivers/sensor.h"
 #include "drivers/compass.h"
+#include "drivers/light_led.h"
+#include "drivers/serial.h"
+#include "drivers/system.h"
 
 #include "sensors/sensors.h"
 #include "sensors/compass.h"
 
 #include "io/serial.h"
-#include "io/display.h"
 #include "io/gps.h"
 #include "io/gps_private.h"
 
 #include "flight/navigation_rewrite.h"
 
 #include "config/config.h"
+#include "config/feature.h"
+
 #include "fc/runtime_config.h"
 
 // GPS timeout for wrong baud rate/disconnection/etc in milliseconds (default 2000 ms)
@@ -59,6 +56,7 @@
 #define GPS_BAUD_CHANGE_DELAY   (200)
 #define GPS_INIT_DELAY          (500)
 #define GPS_BUS_INIT_DELAY      (500)
+#define GPS_BOOT_DELAY          (2000)
 
 typedef enum {
     GPS_TYPE_NA,        // Not available
@@ -92,7 +90,7 @@ static gpsProviderDescriptor_t  gpsProviders[GPS_PROVIDER_COUNT] = {
 
     /* UBLOX binary */
 #ifdef GPS_PROTO_UBLOX
-    { GPS_TYPE_SERIAL, MODE_RXTX, false,  NULL, gpsHandleUBLOX },
+    { GPS_TYPE_SERIAL, MODE_RXTX, false,  NULL, &gpsHandleUBLOX },
 #else
     { GPS_TYPE_NA, 0, false,  NULL, NULL },
 #endif
@@ -106,7 +104,7 @@ static gpsProviderDescriptor_t  gpsProviders[GPS_PROVIDER_COUNT] = {
 
     /* NAZA GPS module */
 #ifdef GPS_PROTO_NAZA
-    { GPS_TYPE_SERIAL, MODE_RX, true,  NULL, gpsHandleNAZA },
+    { GPS_TYPE_SERIAL, MODE_RX, true,  NULL, &gpsHandleNAZA },
 #else
     { GPS_TYPE_NA, 0, false,  NULL, NULL },
 #endif
@@ -134,6 +132,11 @@ static void gpsHandleProtocol(void)
             ENABLE_STATE(GPS_FIX);
         }
         else {
+            /* When no fix available - reset flags as well */
+            gpsSol.flags.validVelNE = 0;
+            gpsSol.flags.validVelD = 0;
+            gpsSol.flags.validEPE = 0;
+
             DISABLE_STATE(GPS_FIX);
         }
 
@@ -148,9 +151,6 @@ static void gpsHandleProtocol(void)
         // Update statistics
         gpsStats.lastMessageDt = gpsState.lastMessageMs - gpsState.lastLastMessageMs;
     }
-
-    debug[0] = gpsSol.fixType;
-    debug[1] = STATE(GPS_FIX);
 }
 
 static void gpsResetSolution(void)
@@ -163,6 +163,7 @@ static void gpsResetSolution(void)
     gpsSol.flags.validVelNE = 0;
     gpsSol.flags.validVelD = 0;
     gpsSol.flags.validMag = 0;
+    gpsSol.flags.validEPE = 0;
 }
 
 void gpsPreInit(gpsConfig_t *initialGpsConfig)
@@ -209,7 +210,7 @@ void gpsInit(serialConfig_t *initialSerialConfig, gpsConfig_t *initialGpsConfig)
             portMode_t mode = gpsProviders[gpsState.gpsConfig->provider].portMode;
 
             // no callback - buffer will be consumed in gpsThread()
-            gpsState.gpsPort = openSerialPort(gpsPortConfig->identifier, FUNCTION_GPS, NULL, gpsToSerialBaudRate[gpsState.baudrateIndex], mode, SERIAL_NOT_INVERTED);
+            gpsState.gpsPort = openSerialPort(gpsPortConfig->identifier, FUNCTION_GPS, NULL, baudRates[gpsToSerialBaudRate[gpsState.baudrateIndex]], mode, SERIAL_NOT_INVERTED);
 
             if (!gpsState.gpsPort) {
                 featureClear(FEATURE_GPS);
@@ -280,6 +281,13 @@ uint16_t gpsConstrainHDOP(uint32_t hdop)
 
 void gpsThread(void)
 {
+    /* Extra delay for at least 2 seconds after booting to give GPS time to initialise */
+    if (!isMPUSoftReset() && (millis() < GPS_BOOT_DELAY)) {
+        sensorsClear(SENSOR_GPS);
+        DISABLE_STATE(GPS_FIX);
+        return;
+    }
+
 #ifdef USE_FAKE_GPS
     gpsFakeGPSUpdate();
 #else
@@ -415,18 +423,19 @@ void gpsEnablePassthrough(serialPort_t *gpsPassthroughPort)
     }
 }
 
-void updateGpsIndicator(uint32_t currentTime)
+void updateGpsIndicator(timeUs_t currentTimeUs)
 {
-    static uint32_t GPSLEDTime;
-    if ((int32_t)(currentTime - GPSLEDTime) >= 0 && (gpsSol.numSat>= 5)) {
-        GPSLEDTime = currentTime + 150000;
+    static timeUs_t GPSLEDTime;
+    if ((int32_t)(currentTimeUs - GPSLEDTime) >= 0 && (gpsSol.numSat>= 5)) {
+        GPSLEDTime = currentTimeUs + 150000;
         LED1_TOGGLE;
     }
 }
 
 /* Support for built-in magnetometer accessible via the native GPS protocol (i.e. NAZA) */
-void gpsMagInit(void)
+bool gpsMagInit(void)
 {
+    return true;
 }
 
 bool gpsMagRead(int16_t *magData)
@@ -437,7 +446,7 @@ bool gpsMagRead(int16_t *magData)
     return gpsSol.flags.validMag;
 }
 
-bool gpsMagDetect(mag_t *mag)
+bool gpsMagDetect(magDev_t *mag)
 {
     if (!(feature(FEATURE_GPS) && gpsProviders[gpsState.gpsConfig->provider].hasCompass))
         return false;
@@ -451,4 +460,8 @@ bool gpsMagDetect(mag_t *mag)
     return true;
 }
 
+bool isGPSHealthy(void)
+{
+    return true;
+}
 #endif

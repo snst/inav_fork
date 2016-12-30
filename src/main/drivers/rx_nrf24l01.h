@@ -23,6 +23,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "rx_spi.h"
+
 #define NRF24L01_MAX_PAYLOAD_SIZE 32
 
 #define BV(x) (1<<(x)) // bit value
@@ -67,6 +69,13 @@ enum {
     NRF24L01_00_CONFIG_PWR_UP           = 1,
     NRF24L01_00_CONFIG_PRIM_RX          = 0,
 
+    NRF24L01_01_EN_AA_ENAA_P5           = 5,
+    NRF24L01_01_EN_AA_ENAA_P4           = 4,
+    NRF24L01_01_EN_AA_ENAA_P3           = 3,
+    NRF24L01_01_EN_AA_ENAA_P2           = 2,
+    NRF24L01_01_EN_AA_ENAA_P1           = 1,
+    NRF24L01_01_EN_AA_ENAA_P0           = 0,
+
     NRF24L01_02_EN_RXADDR_ERX_P5        = 5,
     NRF24L01_02_EN_RXADDR_ERX_P4        = 4,
     NRF24L01_02_EN_RXADDR_ERX_P3        = 3,
@@ -110,7 +119,40 @@ enum {
     NRF24L01_03_SETUP_AW_4BYTES         = 0x02,
     NRF24L01_03_SETUP_AW_5BYTES         = 0x03,
 
-    NRF24L01_04_SETUP_RETR_500uS        = 0x10,
+    NRF24L01_04_SETUP_RETR_ARD_250us    = 0x00,
+    NRF24L01_04_SETUP_RETR_ARD_500us    = 0x10,
+    NRF24L01_04_SETUP_RETR_ARD_750us    = 0x20,
+    NRF24L01_04_SETUP_RETR_ARD_1000us   = 0x30,
+    NRF24L01_04_SETUP_RETR_ARD_1250us   = 0x40,
+    NRF24L01_04_SETUP_RETR_ARD_1500us   = 0x50,
+    NRF24L01_04_SETUP_RETR_ARD_1750us   = 0x60,
+    NRF24L01_04_SETUP_RETR_ARD_2000us   = 0x70,
+    NRF24L01_04_SETUP_RETR_ARD_2250us   = 0x80,
+    NRF24L01_04_SETUP_RETR_ARD_2500us   = 0x90,
+    NRF24L01_04_SETUP_RETR_ARD_2750us   = 0xa0,
+    NRF24L01_04_SETUP_RETR_ARD_3000us   = 0xb0,
+    NRF24L01_04_SETUP_RETR_ARD_3250us   = 0xc0,
+    NRF24L01_04_SETUP_RETR_ARD_3500us   = 0xd0,
+    NRF24L01_04_SETUP_RETR_ARD_3750us   = 0xe0,
+    NRF24L01_04_SETUP_RETR_ARD_4000us   = 0xf0,
+
+    NRF24L01_04_SETUP_RETR_ARC_0        = 0x00,
+    NRF24L01_04_SETUP_RETR_ARC_1        = 0x01,
+    NRF24L01_04_SETUP_RETR_ARC_2        = 0x02,
+    NRF24L01_04_SETUP_RETR_ARC_3        = 0x03,
+    NRF24L01_04_SETUP_RETR_ARC_4        = 0x04,
+    NRF24L01_04_SETUP_RETR_ARC_5        = 0x05,
+    NRF24L01_04_SETUP_RETR_ARC_6        = 0x06,
+    NRF24L01_04_SETUP_RETR_ARC_7        = 0x07,
+    NRF24L01_04_SETUP_RETR_ARC_8        = 0x08,
+    NRF24L01_04_SETUP_RETR_ARC_9        = 0x09,
+    NRF24L01_04_SETUP_RETR_ARC_10       = 0x0a,
+    NRF24L01_04_SETUP_RETR_ARC_11       = 0x0b,
+    NRF24L01_04_SETUP_RETR_ARC_12       = 0x0c,
+    NRF24L01_04_SETUP_RETR_ARC_13       = 0x0d,
+    NRF24L01_04_SETUP_RETR_ARC_14       = 0x0e,
+    NRF24L01_04_SETUP_RETR_ARC_15       = 0x0f,
+
 
     NRF24L01_06_RF_SETUP_RF_DR_2Mbps    = 0x08,
     NRF24L01_06_RF_SETUP_RF_DR_1Mbps    = 0x00,
@@ -133,12 +175,6 @@ enum {
     NRF24L01_PIPE5 = 5
 };
 
-typedef enum {
-    NFR24L01_SOFTSPI,
-    NFR24L01_SPI,
-} nfr24l01_spi_type_e;
-
-void NRF24L01_SpiInit(nfr24l01_spi_type_e spiType);
 void NRF24L01_Initialize(uint8_t baseConfig);
 uint8_t NRF24L01_WriteReg(uint8_t reg, uint8_t data);
 uint8_t NRF24L01_WriteRegisterMulti(uint8_t reg, const uint8_t *data, uint8_t length);
@@ -148,11 +184,12 @@ uint8_t NRF24L01_ReadReg(uint8_t reg);
 uint8_t NRF24L01_ReadRegisterMulti(uint8_t reg, uint8_t *data, uint8_t length);
 uint8_t NRF24L01_ReadPayload(uint8_t *data, uint8_t length);
 
-void NRF24L01_FlushTx(void);
-void NRF24L01_FlushRx(void);
-
 
 // Utility functions
+
+void NRF24L01_FlushTx(void);
+void NRF24L01_FlushRx(void);
+uint8_t NRF24L01_Activate(uint8_t code);
 
 void NRF24L01_SetupBasic(void);
 void NRF24L01_SetStandbyMode(void);

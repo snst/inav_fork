@@ -33,14 +33,10 @@
 #include "common/maths.h"
 #include "common/axis.h"
 #include "common/color.h"
+#include "common/utils.h"
 
 #include "drivers/system.h"
-#include "drivers/sensor.h"
-#include "drivers/accgyro.h"
-#include "drivers/gpio.h"
-#include "drivers/timer.h"
 #include "drivers/serial.h"
-#include "drivers/pwm_rx.h"
 
 #include "io/serial.h"
 #include "fc/rc_controls.h"
@@ -48,6 +44,8 @@
 #include "io/gimbal.h"
 #include "io/gps.h"
 #include "io/ledstrip.h"
+#include "io/motors.h"
+#include "io/servos.h"
 
 #include "sensors/sensors.h"
 #include "sensors/acceleration.h"
@@ -55,10 +53,12 @@
 #include "sensors/barometer.h"
 #include "sensors/boardalignment.h"
 #include "sensors/battery.h"
+#include "sensors/pitotmeter.h"
 
 #include "rx/rx.h"
 
 #include "flight/mixer.h"
+#include "flight/servos.h"
 #include "flight/pid.h"
 #include "flight/imu.h"
 #include "flight/failsafe.h"
@@ -67,13 +67,12 @@
 #include "telemetry/telemetry.h"
 #include "telemetry/mavlink.h"
 
-#include "mavlink/common/mavlink.h"
-
 #include "config/config.h"
 #include "fc/runtime_config.h"
 
 #include "config/config_profile.h"
 #include "config/config_master.h"
+#include "config/feature.h"
 
 #include "fc/mw.h"
 
@@ -81,7 +80,7 @@
 // until this is resolved in mavlink library - ignore -Wpedantic for mavlink code
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
-#include "mavlink/common/mavlink.h"
+#include "common/mavlink.h"
 #pragma GCC diagnostic pop
 
 #define TELEMETRY_MAVLINK_INITIAL_PORT_MODE MODE_TX
@@ -110,7 +109,7 @@ static const uint8_t mavRates[] = {
 static uint8_t mavTicks[MAXSTREAMS];
 static mavlink_message_t mavMsg;
 static uint8_t mavBuffer[MAVLINK_MAX_PACKET_LEN];
-static uint32_t lastMavlinkMessage = 0;
+static timeUs_t lastMavlinkMessage = 0;
 
 static int mavlinkStreamTrigger(enum MAV_DATA_STREAM streamNum)
 {
@@ -210,10 +209,10 @@ void mavlinkSendSystemStatus(void)
     if (sensors(SENSOR_GPS))  onboardControlAndSensors |= 16416;
 
     mavlink_msg_sys_status_pack(0, 200, &mavMsg,
-        // onboard_control_sensors_present Bitmask showing which onboard controllers and sensors are present. 
-        //Value of 0: not present. Value of 1: present. Indices: 0: 3D gyro, 1: 3D acc, 2: 3D mag, 3: absolute pressure, 
-        // 4: differential pressure, 5: GPS, 6: optical flow, 7: computer vision position, 8: laser based position, 
-        // 9: external ground-truth (Vicon or Leica). Controllers: 10: 3D angular rate control 11: attitude stabilization, 
+        // onboard_control_sensors_present Bitmask showing which onboard controllers and sensors are present.
+        //Value of 0: not present. Value of 1: present. Indices: 0: 3D gyro, 1: 3D acc, 2: 3D mag, 3: absolute pressure,
+        // 4: differential pressure, 5: GPS, 6: optical flow, 7: computer vision position, 8: laser based position,
+        // 9: external ground-truth (Vicon or Leica). Controllers: 10: 3D angular rate control 11: attitude stabilization,
         // 12: yaw position, 13: z/altitude control, 14: x/y position control, 15: motor outputs / control
         onboardControlAndSensors,
         // onboard_control_sensors_enabled Bitmask showing which onboard controllers and sensors are enabled
@@ -275,7 +274,7 @@ void mavlinkSendRCChannelsAndRSSI(void)
 }
 
 #if defined(GPS)
-void mavlinkSendPosition(void)
+void mavlinkSendPosition(timeUs_t currentTimeUs)
 {
     uint16_t msgLength;
     uint8_t gpsFixType = 0;
@@ -292,7 +291,7 @@ void mavlinkSendPosition(void)
 
     mavlink_msg_gps_raw_int_pack(0, 200, &mavMsg,
         // time_usec Timestamp (microseconds since UNIX epoch or microseconds since system boot)
-        micros(),
+        currentTimeUs,
         // fix_type 0-1: no fix, 2: 2D fix, 3: 3D fix. Some applications will not use the value of this field unless it is at least two, so always correctly fill in the fix.
         gpsFixType,
         // lat Latitude in 1E7 degrees
@@ -317,7 +316,7 @@ void mavlinkSendPosition(void)
     // Global position
     mavlink_msg_global_position_int_pack(0, 200, &mavMsg,
         // time_usec Timestamp (microseconds since UNIX epoch or microseconds since system boot)
-        micros(),
+        currentTimeUs,
         // lat Latitude in 1E7 degrees
         gpsSol.llh.lat,
         // lon Longitude in 1E7 degrees
@@ -424,7 +423,7 @@ void mavlinkSendHUDAndHeartbeat(void)
         mavModes |= MAV_MODE_FLAG_SAFETY_ARMED;
 
     uint8_t mavSystemType;
-    switch(masterConfig.mixerMode)
+    switch(mixerConfig()->mixerMode)
     {
         case MIXER_TRI:
             mavSystemType = MAV_TYPE_TRICOPTER;
@@ -447,6 +446,7 @@ void mavlinkSendHUDAndHeartbeat(void)
             break;
         case MIXER_FLYING_WING:
         case MIXER_AIRPLANE:
+        case MIXER_CUSTOM_AIRPLANE:
             mavSystemType = MAV_TYPE_FIXED_WING;
             break;
         case MIXER_HELI_120_CCPM:
@@ -503,8 +503,9 @@ void mavlinkSendHUDAndHeartbeat(void)
     mavlinkSerialWrite(mavBuffer, msgLength);
 }
 
-void processMAVLinkTelemetry(void)
+void processMAVLinkTelemetry(timeUs_t currentTimeUs)
 {
+    UNUSED(currentTimeUs);
     // is executed @ TELEMETRY_MAVLINK_MAXRATE rate
     if (mavlinkStreamTrigger(MAV_DATA_STREAM_EXTENDED_STATUS)) {
         mavlinkSendSystemStatus();
@@ -516,7 +517,7 @@ void processMAVLinkTelemetry(void)
 
 #ifdef GPS
     if (mavlinkStreamTrigger(MAV_DATA_STREAM_POSITION)) {
-        mavlinkSendPosition();
+        mavlinkSendPosition(currentTimeUs);
     }
 #endif
 
@@ -529,7 +530,7 @@ void processMAVLinkTelemetry(void)
     }
 }
 
-void handleMAVLinkTelemetry(void)
+void handleMAVLinkTelemetry(timeUs_t currentTimeUs)
 {
     if (!mavlinkTelemetryEnabled) {
         return;
@@ -539,10 +540,9 @@ void handleMAVLinkTelemetry(void)
         return;
     }
 
-    uint32_t now = micros();
-    if ((now - lastMavlinkMessage) >= TELEMETRY_MAVLINK_DELAY) {
-        processMAVLinkTelemetry();
-        lastMavlinkMessage = now;
+    if ((currentTimeUs - lastMavlinkMessage) >= TELEMETRY_MAVLINK_DELAY) {
+        processMAVLinkTelemetry(currentTimeUs);
+        lastMavlinkMessage = currentTimeUs;
     }
 }
 

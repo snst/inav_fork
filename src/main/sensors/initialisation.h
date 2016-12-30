@@ -17,6 +17,8 @@
 
 #pragma once
 
-bool sensorsAutodetect(sensorAlignmentConfig_t *sensorAlignmentConfig, uint8_t gyroLpf,
-        uint8_t accHardwareToUse, uint8_t magHardwareToUse, uint8_t baroHardwareToUse,
-        int16_t magDeclinationFromConfig);
+bool sensorsAutodetect(const gyroConfig_t *gyroConfig,
+                accelerometerConfig_t *accConfig,
+                compassConfig_t *compassConfig,
+                barometerConfig_t *baroConfig,
+                pitotmeterConfig_t *pitotConfig);

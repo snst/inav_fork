@@ -23,14 +23,31 @@
 
 #include "platform.h"
 
-#include "build/build_config.h"
+#include "blackbox/blackbox.h"
 
 #include "common/axis.h"
 #include "common/maths.h"
+#include "common/utils.h"
+
+#include "config/config.h"
+#include "config/feature.h"
 
 #include "drivers/system.h"
-#include "drivers/sensor.h"
-#include "drivers/accgyro.h"
+
+#include "fc/mw.h"
+#include "fc/rc_controls.h"
+#include "fc/rc_curves.h"
+#include "fc/runtime_config.h"
+
+#include "flight/pid.h"
+#include "flight/navigation_rewrite.h"
+#include "flight/failsafe.h"
+
+#include "io/gps.h"
+#include "io/beeper.h"
+#include "io/motors.h"
+
+#include "rx/rx.h"
 
 #include "sensors/barometer.h"
 #include "sensors/battery.h"
@@ -38,31 +55,9 @@
 #include "sensors/gyro.h"
 #include "sensors/acceleration.h"
 
-#include "rx/rx.h"
-
-#include "io/gps.h"
-#include "io/beeper.h"
-#include "io/escservo.h"
-
-#include "fc/rc_controls.h"
-#include "fc/rc_curves.h"
-#include "fc/runtime_config.h"
-
-#include "io/display.h"
-
-#include "flight/pid.h"
-#include "flight/navigation_rewrite.h"
-#include "flight/failsafe.h"
-
-#include "config/config.h"
-
-#include "blackbox/blackbox.h"
-
-#include "mw.h"
-
 #define AIRMODE_DEADBAND 25
 
-static escAndServoConfig_t *escAndServoConfig;
+static motorConfig_t *motorConfig;
 static pidProfile_t *pidProfile;
 
 // true if arming is done via the sticks (as opposed to a switch)
@@ -144,10 +139,11 @@ rollPitchStatus_e calculateRollPitchCenterStatus(rxConfig_t *rxConfig)
     return NOT_CENTERED;
 }
 
-void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStatus, bool disarm_kill_switch)
+void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStatus, bool disarm_kill_switch, bool fixed_wing_auto_arm)
 {
     static uint8_t rcDelayCommand;      // this indicates the number of time (multiple of RC measurement at 50Hz) the sticks must be maintained to run or switch off motors
     static uint8_t rcSticks;            // this hold sticks position for command combos
+    static uint8_t rcDisarmTicks;       // this is an extra guard for disarming through switch to prevent that one frame can disarm it
     uint8_t stTmp = 0;
     int i;
 
@@ -169,8 +165,8 @@ void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStat
 
     // perform actions
     if (!isUsingSticksToArm) {
-
         if (IS_RC_MODE_ACTIVE(BOXARM)) {
+            rcDisarmTicks = 0;
             // Arming via ARM BOX
             if (throttleStatus == THROTTLE_LOW) {
                 if (ARMING_FLAG(OK_TO_ARM)) {
@@ -179,13 +175,20 @@ void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStat
             }
         } else {
             // Disarming via ARM BOX
-
-            if (ARMING_FLAG(ARMED) && rxIsReceivingSignal() && !failsafeIsActive()  ) {
-                if (disarm_kill_switch) {
-                    mwDisarm();
-                } else if (throttleStatus == THROTTLE_LOW) {
-                    mwDisarm();
+            // Don't disarm via switch if failsafe is active or receiver doesn't receive data - we can't trust receiver
+            // and can't afford to risk disarming in the air
+            if (ARMING_FLAG(ARMED) && !(IS_RC_MODE_ACTIVE(BOXFAILSAFE) && feature(FEATURE_FAILSAFE)) && rxIsReceivingSignal() && !failsafeIsActive()) {
+                rcDisarmTicks++;
+                if (rcDisarmTicks > 3) {    // Wait for at least 3 RX ticks (60ms @ 50Hz RX)
+                    if (disarm_kill_switch) {
+                        mwDisarm();
+                    } else if (throttleStatus == THROTTLE_LOW) {
+                        mwDisarm();
+                    }
                 }
+            }
+            else {
+                rcDisarmTicks = 0;
             }
         }
     }
@@ -194,17 +197,22 @@ void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStat
         return;
     }
 
-    if (isUsingSticksToArm) {
+   if (isUsingSticksToArm) {
         // Disarm on throttle down + yaw
         if (rcSticks == THR_LO + YAW_LO + PIT_CE + ROL_CE) {
-            if (ARMING_FLAG(ARMED))
+            // Dont disarm if fixedwing and motorstop
+            if (STATE(FIXED_WING) && feature(FEATURE_MOTOR_STOP) && fixed_wing_auto_arm) {
+                return;
+            }
+            else if (ARMING_FLAG(ARMED)) {
                 mwDisarm();
+            }
             else {
                 beeper(BEEPER_DISARM_REPEAT);    // sound tone while stick held
                 rcDelayCommand = 0;              // reset so disarm tone will repeat
             }
         }
-    }
+   }
 
     if (ARMING_FLAG(ARMED)) {
         // actions during armed
@@ -232,18 +240,30 @@ void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStat
         return;
     }
 
+
     if (rcSticks == THR_LO + YAW_LO + PIT_LO + ROL_HI) {
         saveConfigAndNotify();
     }
 
-    if (isUsingSticksToArm) {
 
-        if (rcSticks == THR_LO + YAW_HI + PIT_CE + ROL_CE) {
-            // Arm via YAW
-            mwArm();
-            return;
+    if (isUsingSticksToArm) {
+        if (STATE(FIXED_WING) && feature(FEATURE_MOTOR_STOP) && fixed_wing_auto_arm) {
+            // Auto arm on throttle when using fixedwing and motorstop
+            if (throttleStatus != THROTTLE_LOW) {
+                // Arm via YAW
+                mwArm();
+                return;
+            }
+        }
+        else {
+            if (rcSticks == THR_LO + YAW_HI + PIT_CE + ROL_CE) {
+                // Arm via YAW
+                mwArm();
+                return;
+            }
         }
     }
+
 
     if (rcSticks == THR_HI + YAW_LO + PIT_LO + ROL_CE) {
         // Calibrating Acc
@@ -501,7 +521,7 @@ void applyStepAdjustment(controlRateConfig_t *controlRateConfig, uint8_t adjustm
         case ADJUSTMENT_THROTTLE_EXPO:
             newValue = constrain((int)controlRateConfig->thrExpo8 + delta, 0, 100); // FIXME magic numbers repeated in serial_cli.c
             controlRateConfig->thrExpo8 = newValue;
-            generateThrottleCurve(controlRateConfig, escAndServoConfig);
+            generateThrottleCurve(controlRateConfig, motorConfig);
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_THROTTLE_EXPO, newValue);
         break;
         case ADJUSTMENT_PITCH_ROLL_RATE:
@@ -510,6 +530,7 @@ void applyStepAdjustment(controlRateConfig_t *controlRateConfig, uint8_t adjustm
             controlRateConfig->rates[FD_PITCH] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_PITCH_RATE, newValue);
             if (adjustmentFunction == ADJUSTMENT_PITCH_RATE) {
+                schedulePidGainsUpdate();
                 break;
             }
             // follow though for combined ADJUSTMENT_PITCH_ROLL_RATE
@@ -517,11 +538,13 @@ void applyStepAdjustment(controlRateConfig_t *controlRateConfig, uint8_t adjustm
             newValue = constrain((int)controlRateConfig->rates[FD_ROLL] + delta, CONTROL_RATE_CONFIG_ROLL_PITCH_RATE_MIN, CONTROL_RATE_CONFIG_ROLL_PITCH_RATE_MAX);
             controlRateConfig->rates[FD_ROLL] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_ROLL_RATE, newValue);
+            schedulePidGainsUpdate();
             break;
         case ADJUSTMENT_YAW_RATE:
             newValue = constrain((int)controlRateConfig->rates[FD_YAW] + delta, CONTROL_RATE_CONFIG_YAW_RATE_MIN, CONTROL_RATE_CONFIG_YAW_RATE_MAX);
             controlRateConfig->rates[FD_YAW] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_YAW_RATE, newValue);
+            schedulePidGainsUpdate();
             break;
         case ADJUSTMENT_PITCH_ROLL_P:
         case ADJUSTMENT_PITCH_P:
@@ -529,6 +552,7 @@ void applyStepAdjustment(controlRateConfig_t *controlRateConfig, uint8_t adjustm
             pidProfile->P8[PIDPITCH] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_PITCH_P, newValue);
             if (adjustmentFunction == ADJUSTMENT_PITCH_P) {
+                schedulePidGainsUpdate();
                 break;
             }
             // follow though for combined ADJUSTMENT_PITCH_ROLL_P
@@ -536,6 +560,7 @@ void applyStepAdjustment(controlRateConfig_t *controlRateConfig, uint8_t adjustm
             newValue = constrain((int)pidProfile->P8[PIDROLL] + delta, 0, 200); // FIXME magic numbers repeated in serial_cli.c
             pidProfile->P8[PIDROLL] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_ROLL_P, newValue);
+            schedulePidGainsUpdate();
             break;
         case ADJUSTMENT_PITCH_ROLL_I:
         case ADJUSTMENT_PITCH_I:
@@ -543,6 +568,7 @@ void applyStepAdjustment(controlRateConfig_t *controlRateConfig, uint8_t adjustm
             pidProfile->I8[PIDPITCH] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_PITCH_I, newValue);
             if (adjustmentFunction == ADJUSTMENT_PITCH_I) {
+                schedulePidGainsUpdate();
                 break;
             }
             // follow though for combined ADJUSTMENT_PITCH_ROLL_I
@@ -550,6 +576,7 @@ void applyStepAdjustment(controlRateConfig_t *controlRateConfig, uint8_t adjustm
             newValue = constrain((int)pidProfile->I8[PIDROLL] + delta, 0, 200); // FIXME magic numbers repeated in serial_cli.c
             pidProfile->I8[PIDROLL] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_ROLL_I, newValue);
+            schedulePidGainsUpdate();
             break;
         case ADJUSTMENT_PITCH_ROLL_D:
         case ADJUSTMENT_PITCH_D:
@@ -557,6 +584,7 @@ void applyStepAdjustment(controlRateConfig_t *controlRateConfig, uint8_t adjustm
             pidProfile->D8[PIDPITCH] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_PITCH_D, newValue);
             if (adjustmentFunction == ADJUSTMENT_PITCH_D) {
+                schedulePidGainsUpdate();
                 break;
             }
             // follow though for combined ADJUSTMENT_PITCH_ROLL_D
@@ -564,21 +592,25 @@ void applyStepAdjustment(controlRateConfig_t *controlRateConfig, uint8_t adjustm
             newValue = constrain((int)pidProfile->D8[PIDROLL] + delta, 0, 200); // FIXME magic numbers repeated in serial_cli.c
             pidProfile->D8[PIDROLL] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_ROLL_D, newValue);
+            schedulePidGainsUpdate();
             break;
         case ADJUSTMENT_YAW_P:
             newValue = constrain((int)pidProfile->P8[PIDYAW] + delta, 0, 200); // FIXME magic numbers repeated in serial_cli.c
             pidProfile->P8[PIDYAW] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_YAW_P, newValue);
+            schedulePidGainsUpdate();
             break;
         case ADJUSTMENT_YAW_I:
             newValue = constrain((int)pidProfile->I8[PIDYAW] + delta, 0, 200); // FIXME magic numbers repeated in serial_cli.c
             pidProfile->I8[PIDYAW] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_YAW_I, newValue);
+            schedulePidGainsUpdate();
             break;
         case ADJUSTMENT_YAW_D:
             newValue = constrain((int)pidProfile->D8[PIDYAW] + delta, 0, 200); // FIXME magic numbers repeated in serial_cli.c
             pidProfile->D8[PIDYAW] = newValue;
             blackboxLogInflightAdjustmentEvent(ADJUSTMENT_YAW_D, newValue);
+            schedulePidGainsUpdate();
             break;
         default:
             break;
@@ -688,9 +720,9 @@ int32_t getRcStickDeflection(int32_t axis, uint16_t midrc) {
     return MIN(ABS(rcData[axis] - midrc), 500);
 }
 
-void useRcControlsConfig(modeActivationCondition_t *modeActivationConditions, escAndServoConfig_t *escAndServoConfigToUse, pidProfile_t *pidProfileToUse)
+void useRcControlsConfig(modeActivationCondition_t *modeActivationConditions, motorConfig_t *motorConfigToUse, pidProfile_t *pidProfileToUse)
 {
-    escAndServoConfig = escAndServoConfigToUse;
+    motorConfig = motorConfigToUse;
     pidProfile = pidProfileToUse;
 
     isUsingSticksToArm = !isModeActivationConditionPresent(modeActivationConditions, BOXARM);

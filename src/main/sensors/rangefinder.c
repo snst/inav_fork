@@ -26,17 +26,20 @@
 
 #include "build/build_config.h"
 
-
 #include "common/maths.h"
+#include "common/utils.h"
 
 #include "config/config.h"
-#include "fc/runtime_config.h"
-
+#include "config/feature.h"
 
 #include "drivers/io.h"
+#include "drivers/logging.h"
 #include "drivers/sonar_hcsr04.h"
 #include "drivers/sonar_srf10.h"
+#include "drivers/sonar_i2c.h"
 #include "drivers/rangefinder.h"
+
+#include "fc/runtime_config.h"
 
 #include "sensors/sensors.h"
 #include "sensors/rangefinder.h"
@@ -55,6 +58,37 @@ static rangefinderFunctionPointers_t rangefinderFunctionPointers;
 static float rangefinderMaxTiltCos;
 
 static int32_t calculatedAltitude;
+static int32_t readAlt = 0;
+
+/*
+ * Detect which rangefinder is present
+ */
+rangefinderType_e rangefinderDetect(void)
+{
+    rangefinderType_e rangefinderType = RANGEFINDER_NONE;
+    if (feature(FEATURE_SONAR)) {
+        // the user has set the sonar feature, so assume they have an HC-SR04 plugged in,
+        // since there is no way to detect it
+        rangefinderType = RANGEFINDER_I2C;
+    }
+#ifdef USE_SONAR_SRF10
+    if (srf10_detect()) {
+        // if an SFR10 sonar rangefinder is detected then use it in preference to the assumed HC-SR04
+        rangefinderType = RANGEFINDER_SRF10;
+    }
+#endif
+
+    addBootlogEvent6(BOOT_EVENT_RANGEFINDER_DETECTION, BOOT_EVENT_FLAGS_NONE, rangefinderType, 0, 0, 0);
+
+    requestedSensors[SENSOR_INDEX_RANGEFINDER] = rangefinderType;   // FIXME: Make rangefinder type selectable from CLI
+    detectedSensors[SENSOR_INDEX_RANGEFINDER] = rangefinderType;
+
+    if (rangefinderType != RANGEFINDER_NONE) {
+        sensorsSet(SENSOR_SONAR);
+    }
+
+    return rangefinderType;
+}
 
 static const sonarHcsr04Hardware_t *sonarGetHardwareConfigurationForHCSR04(currentSensor_e currentSensor)
 {
@@ -93,11 +127,13 @@ STATIC_UNIT_TESTED void rangefinderSetFunctionPointers(rangefinderType_e rangefi
     default:
     case RANGEFINDER_NONE:
         break;
+#ifdef USE_SONAR_SR04
     case RANGEFINDER_HCSR04:
         rangefinderFunctionPointers.init = hcsr04_init;
         rangefinderFunctionPointers.update = hcsr04_start_reading;
         rangefinderFunctionPointers.read = hcsr04_get_distance;
         break;
+#endif
 #ifdef USE_SONAR_SRF10
     case RANGEFINDER_SRF10:
         rangefinderFunctionPointers.init = srf10_init;
@@ -105,13 +141,21 @@ STATIC_UNIT_TESTED void rangefinderSetFunctionPointers(rangefinderType_e rangefi
         rangefinderFunctionPointers.read = srf10_get_distance;
         break;
 #endif
-    }
+#ifdef USE_SONAR_I2C
+    case RANGEFINDER_I2C:
+        rangefinderFunctionPointers.init = sonar_i2c_init;
+        rangefinderFunctionPointers.update = sonar_i2c_start_reading;
+        rangefinderFunctionPointers.read = sonar_i2c_get_distance;
+        break;
+#endif    
+	}
 }
 
 /*
  * Get the HCSR04 sonar hardware configuration.
  * NOTE: sonarInit() must be subsequently called before using any of the sonar functions.
  */
+/*
 const sonarHcsr04Hardware_t *sonarGetHardwareConfiguration(currentSensor_e currentSensor)
 {
     // Return the configuration for the HC-SR04 hardware.
@@ -119,14 +163,15 @@ const sonarHcsr04Hardware_t *sonarGetHardwareConfiguration(currentSensor_e curre
     // so cannot detect if another sonar device is present
     return sonarGetHardwareConfigurationForHCSR04(currentSensor);
 }
-
+*/
 void rangefinderInit(rangefinderType_e rangefinderType)
 {
     calculatedAltitude = RANGEFINDER_OUT_OF_RANGE;
-
+#ifdef USE_SONAR_SR04
     if (rangefinderType == RANGEFINDER_HCSR04) {
         hcsr04_set_sonar_hardware();
     }
+#endif	
 #ifndef UNIT_TEST
     rangefinderSetFunctionPointers(rangefinderType);
 #endif
@@ -150,17 +195,10 @@ static int32_t applyMedianFilter(int32_t newReading)
     #define DISTANCE_SAMPLES_MEDIAN 5
     static int32_t filterSamples[DISTANCE_SAMPLES_MEDIAN];
     static int filterSampleIndex = 0;
-    static bool medianFilterReady = false;
 
-    if (newReading > RANGEFINDER_OUT_OF_RANGE) {// only accept samples that are in range
-        filterSamples[filterSampleIndex] = newReading;
-        ++filterSampleIndex;
-        if (filterSampleIndex == DISTANCE_SAMPLES_MEDIAN) {
-            filterSampleIndex = 0;
-            medianFilterReady = true;
-        }
-    }
-    return medianFilterReady ? quickMedianFilter5(filterSamples) : newReading;
+    filterSamples[filterSampleIndex] = newReading;
+	filterSampleIndex = (filterSampleIndex + 1) % DISTANCE_SAMPLES_MEDIAN;
+    return quickMedianFilter5(filterSamples);
 }
 
 /*
@@ -170,7 +208,13 @@ void rangefinderUpdate(void)
 {
     if (rangefinderFunctionPointers.update) {
         rangefinderFunctionPointers.update();
-    }
+        int32_t distance = rangefinderFunctionPointers.read();
+		if(distance>rangefinderMaxRangeCm)
+		{
+			distance = RANGEFINDER_OUT_OF_RANGE;
+		}
+        readAlt = applyMedianFilter(distance);
+	}
 }
 
 /**
@@ -178,11 +222,13 @@ void rangefinderUpdate(void)
  */
 int32_t rangefinderRead(void)
 {
+	return readAlt;
+	/*
     if (rangefinderFunctionPointers.read) {
         const int32_t distance = rangefinderFunctionPointers.read();
         return applyMedianFilter(distance);
     }
-    return 0;
+    return 0;*/
 }
 
 /**
@@ -209,6 +255,11 @@ int32_t rangefinderCalculateAltitude(int32_t rangefinderDistance, float cosTiltA
 int32_t rangefinderGetLatestAltitude(void)
 {
     return calculatedAltitude;
+}
+
+bool isRangefinderHealthy(void)
+{
+    return true;
 }
 #endif
 

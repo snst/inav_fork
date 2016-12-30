@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "common/time.h"
+
 #define STICK_CHANNEL_COUNT 4
 
 #define PWM_RANGE_ZERO 0 // FIXME should all usages of this be changed to use PWM_RANGE_MIN?
@@ -38,10 +40,10 @@
 #define DEFAULT_SERVO_MAX_ANGLE 90
 
 typedef enum {
-    SERIAL_RX_FRAME_PENDING = 0,
-    SERIAL_RX_FRAME_COMPLETE = (1 << 0),
-    SERIAL_RX_FRAME_FAILSAFE = (1 << 1)
-} serialrxFrameState_t;
+    RX_FRAME_PENDING = 0,
+    RX_FRAME_COMPLETE = (1 << 0),
+    RX_FRAME_FAILSAFE = (1 << 1)
+} rxFrameState_e;
 
 typedef enum {
     SERIALRX_SPEKTRUM1024 = 0,
@@ -113,18 +115,18 @@ typedef struct rxConfig_s {
     uint8_t rcmap[MAX_MAPPABLE_RX_INPUTS];  // mapping of radio channels to internal RPYTA+ order
     uint8_t serialrx_provider;              // type of UART-based receiver (0 = spek 10, 1 = spek 11, 2 = sbus). Must be enabled by FEATURE_RX_SERIAL first.
     uint8_t sbus_inversion;                 // default sbus (Futaba, FrSKY) is inverted. Support for uninverted OpenLRS (and modified FrSKY) receivers.
-    uint8_t nrf24rx_protocol;               // type of nrf24 protocol (0 = v202 250kbps). Must be enabled by FEATURE_RX_NRF24 first.
-    uint32_t nrf24rx_id;
-    uint8_t nrf24rx_channel_count;
+    uint8_t rx_spi_protocol;               // type of nrf24 protocol (0 = v202 250kbps). Must be enabled by FEATURE_RX_NRF24 first.
+    uint32_t rx_spi_id;
+    uint8_t rx_spi_rf_channel_count;
     uint8_t spektrum_sat_bind;              // number of bind pulses for Spektrum satellite receivers
     uint8_t spektrum_sat_bind_autoreset;    // whenever we will reset (exit) binding mode after hard reboot
     uint8_t rssi_channel;
     uint8_t rssi_scale;
     uint8_t rssi_ppm_invert;
-    uint8_t rcSmoothing;                    // Enable/Disable RC filtering
     uint16_t midrc;                         // Some radios have not a neutral point centered on 1500. can be changed here
     uint16_t mincheck;                      // minimum rc end
     uint16_t maxcheck;                      // maximum rc end
+    uint8_t rcSmoothing;                    // Enable/Disable RC filtering
 
     uint16_t rx_min_usec;
     uint16_t rx_max_usec;
@@ -135,32 +137,33 @@ typedef struct rxConfig_s {
 
 #define REMAPPABLE_CHANNEL_COUNT (sizeof(((rxConfig_t *)0)->rcmap) / sizeof(((rxConfig_t *)0)->rcmap[0]))
 
+struct rxRuntimeConfig_s;
+typedef uint16_t (*rcReadRawDataFnPtr)(const struct rxRuntimeConfig_s *rxRuntimeConfig, uint8_t chan); // used by receiver driver to return channel data
+typedef uint8_t (*rcFrameStatusFnPtr)(void);
+
 typedef struct rxRuntimeConfig_s {
     uint8_t channelCount;                  // number of rc channels as reported by current input driver
-    uint8_t auxChannelCount;
+    uint16_t rxRefreshRate;
+    rcReadRawDataFnPtr rcReadRawFn;
+    rcFrameStatusFnPtr rcFrameStatusFn;
 } rxRuntimeConfig_t;
 
-extern rxRuntimeConfig_t rxRuntimeConfig;
+extern rxRuntimeConfig_t rxRuntimeConfig; //!!TODO remove this extern, only needed once for channelCount
 
 struct modeActivationCondition_s;
-void rxInit(rxConfig_t *rxConfig, struct modeActivationCondition_s *modeActivationConditions);
-void useRxConfig(rxConfig_t *rxConfigToUse);
-
-typedef uint16_t (*rcReadRawDataPtr)(rxRuntimeConfig_t *rxRuntimeConfig, uint8_t chan);        // used by receiver driver to return channel data
-
-void updateRx(uint32_t currentTime);
+void rxInit(const rxConfig_t *rxConfig, const struct modeActivationCondition_s *modeActivationConditions);
+void useRxConfig(const rxConfig_t *rxConfigToUse);
+bool updateRx(timeUs_t currentTimeUs);
 bool rxIsReceivingSignal(void);
 bool rxAreFlightChannelsValid(void);
-bool shouldProcessRx(uint32_t currentTime);
-void calculateRxChannelsAndUpdateFailsafe(uint32_t currentTime);
+void calculateRxChannelsAndUpdateFailsafe(timeUs_t currentTimeUs);
 
 void parseRcChannels(const char *input, rxConfig_t *rxConfig);
-uint8_t serialRxFrameStatus(rxConfig_t *rxConfig);
 
-void updateRSSI(uint32_t currentTime);
+void updateRSSI(timeUs_t currentTimeUs);
 void resetAllRxChannelRangeConfigurations(rxChannelRangeConfiguration_t *rxChannelRangeConfiguration);
 
 void suspendRxSignal(void);
 void resumeRxSignal(void);
 
-void initRxRefreshRate(uint16_t *rxRefreshRatePtr);
+uint16_t rxRefreshRate(void);

@@ -25,11 +25,10 @@
 #define BEEPER_INVERTED
 
 #define USE_EXTI
-#define EXTI_CALLBACK_HANDLER_COUNT 2 // MPU data ready and MAG data ready
 #define USE_MPU_DATA_READY_SIGNAL
 #define ENSURE_MPU_DATA_READY_IS_LOW
-#define USE_MAG_DATA_READY_SIGNAL
-#define ENSURE_MAG_DATA_READY_IS_HIGH
+//#define USE_MAG_DATA_READY_SIGNAL
+//#define ENSURE_MAG_DATA_READY_IS_HIGH
 
 #define GYRO
 #define USE_GYRO_MPU6050
@@ -43,6 +42,7 @@
 #define USE_BARO_BMP280
 
 #define MAG
+#define USE_MAG_AK8963
 #define USE_MAG_AK8975
 #define USE_MAG_HMC5883
 #define USE_MAG_MAG3110
@@ -104,10 +104,7 @@
 #define WS2811_DMA_TC_FLAG              DMA1_FLAG_TC2
 #define WS2811_DMA_HANDLER_IDENTIFER    DMA1_CH2_HANDLER
 
-
-#define NAV
-//#define NAV_AUTO_MAG_DECLINATION
-#define NAV_GPS_GLITCH_DETECTION
+#undef NAV_MAX_WAYPOINTS
 #define NAV_MAX_WAYPOINTS       30
 
 #define SPEKTRUM_BIND
@@ -119,6 +116,10 @@
 #undef GPS_PROTO_NAZA
 #undef TELEMETRY_HOTT
 #undef TELEMETRY_SMARTPORT
+#undef TELEMETRY_IBUS
+
+// Number of available PWM outputs
+#define MAX_PWM_OUTPUT_PORTS    12
 
 // IO - stm32f303cc in 48pin package
 #define TARGET_IO_PORTA         0xffff

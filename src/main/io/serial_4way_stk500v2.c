@@ -16,7 +16,7 @@
  * Author: 4712
  * have a look at https://github.com/sim-/tgy/blob/master/boot.inc
  * for info about the stk500v2 implementation
- */ 
+ */
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -32,7 +32,6 @@
 #include "drivers/system.h"
 #include "config/config.h"
 #include "io/serial.h"
-#include "io/serial_msp.h"
 #include "io/serial_4way.h"
 #include "io/serial_4way_impl.h"
 #include "io/serial_4way_stk500v2.h"

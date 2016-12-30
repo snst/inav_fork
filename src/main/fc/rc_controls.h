@@ -28,21 +28,15 @@ typedef enum {
     BOXHEADFREE,
     BOXHEADADJ,
     BOXCAMSTAB,
-    BOXCAMTRIG,
     BOXNAVRTH,      // old GPSHOME
     BOXNAVPOSHOLD,  // old GPSHOLD
     BOXPASSTHRU,
     BOXBEEPERON,
-    BOXLEDMAX,
     BOXLEDLOW,
     BOXLLIGHTS,
-    BOXGOV,
+    BOXNAVLAUNCH,
     BOXOSD,
     BOXTELEMETRY,
-    //BOXGTUNE,
-    BOXSERVO1,
-    BOXSERVO2,
-    BOXSERVO3,
     BOXBLACKBOX,
     BOXFAILSAFE,
     BOXNAVWP,
@@ -53,6 +47,7 @@ typedef enum {
     BOXSURFACE,
     BOXFLAPERON,
     BOXTURNASSIST,
+    BOXAUTOTRIM,
     CHECKBOX_ITEM_COUNT
 } boxId_e;
 
@@ -169,12 +164,18 @@ typedef struct rcControlsConfig_s {
     uint8_t alt_hold_deadband;             // Defines the neutral zone of throttle stick during altitude hold
 } rcControlsConfig_t;
 
+typedef struct armingConfig_s {
+    uint8_t fixed_wing_auto_arm;            // Auto-arm fixed wing aircraft on throttle up and never disarm
+    uint8_t disarm_kill_switch;             // allow disarm via AUX switch regardless of throttle value
+    uint8_t auto_disarm_delay;              // allow automatically disarming multicopters after auto_disarm_delay seconds of zero throttle. Disabled when 0
+} armingConfig_t;
+
 bool areUsingSticksToArm(void);
 
 bool areSticksInApModePosition(uint16_t ap_mode);
 throttleStatus_e calculateThrottleStatus(rxConfig_t *rxConfig, uint16_t deadband3d_throttle);
 rollPitchStatus_e calculateRollPitchCenterStatus(rxConfig_t *rxConfig);
-void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStatus, bool disarm_kill_switch);
+void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStatus, bool disarm_kill_switch, bool fixed_wing_auto_arm);
 
 void updateActivatedModes(modeActivationCondition_t *modeActivationConditions, modeActivationOperator_e modeActivationOperator);
 
@@ -268,3 +269,6 @@ bool isUsingNavigationModes(void);
 
 int32_t getRcStickDeflection(int32_t axis, uint16_t midrc);
 bool isModeActivationConditionPresent(modeActivationCondition_t *modeActivationConditions, boxId_e modeId);
+struct motorConfig_s;
+struct pidProfile_s;
+void useRcControlsConfig(modeActivationCondition_t *modeActivationConditions, struct motorConfig_s *motorConfigToUse, struct pidProfile_s *pidProfileToUse);

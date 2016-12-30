@@ -130,11 +130,14 @@
 
 #define USE_SERIAL_4WAY_BLHELI_INTERFACE
 
-#undef GPS
+//#undef GPS
 #undef GPS_PROTO_NMEA
-#undef GPS_PROTO_UBLOX
+//#undef GPS_PROTO_UBLOX
 #undef GPS_PROTO_I2C_NAV
 #undef GPS_PROTO_NAZA
+
+// Number of available PWM outputs
+#define MAX_PWM_OUTPUT_PORTS    8
 
 // IO - stm32f303cc in 48pin package
 #define TARGET_IO_PORTA         0xffff

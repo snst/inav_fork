@@ -2,6 +2,7 @@ F1_TARGETS  += $(TARGET)
 FEATURES    = HIGHEND 
 
 TARGET_SRC = \
+            drivers/accgyro_fake.c \
             drivers/accgyro_mpu.c \
             drivers/accgyro_mpu6050.c \
             drivers/barometer_bmp085.c \
@@ -10,7 +11,5 @@ TARGET_SRC = \
             drivers/compass_hmc5883l.c \
             drivers/compass_mag3110.c \
             drivers/light_ws2811strip.c \
-            drivers/light_ws2811strip_stm32f10x.c \
-            drivers/sonar_hcsr04.c \
-            drivers/sonar_srf10.c
+            drivers/light_ws2811strip_stm32f10x.c
 

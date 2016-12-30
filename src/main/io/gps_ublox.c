@@ -35,9 +35,8 @@
 #include "common/axis.h"
 #include "common/utils.h"
 
-#include "drivers/system.h"
 #include "drivers/serial.h"
-#include "drivers/serial_uart.h"
+#include "drivers/system.h"
 
 #include "io/serial.h"
 #include "io/gps.h"
@@ -50,6 +49,9 @@
 
 //#define GPS_PROTO_UBLOX_NEO7PLUS
 #define GPS_VERSION_DETECTION_TIMEOUT_MS    300
+#define MAX_UBLOX_PAYLOAD_SIZE              256
+#define UBLOX_BUFFER_SIZE                   MAX_UBLOX_PAYLOAD_SIZE
+#define UBLOX_SBAS_MESSAGE_LENGTH           16
 
 static const char * baudInitData[GPS_BAUDRATE_COUNT] = {
     "$PUBX,41,1,0003,0001,115200,0*1E\r\n",     // GPS_BAUDRATE_115200
@@ -130,8 +132,6 @@ static const uint8_t ubloxInit_RATE_10Hz[] = {
 // SBAS Configuration Settings Desciption, Page 4/210
 // 31.21 CFG-SBAS (0x06 0x16), Page 142/210
 // A.10 SBAS Configuration (UBX-CFG-SBAS), Page 198/210 - GPS.G6-SW-10018-F
-
-#define UBLOX_SBAS_MESSAGE_LENGTH 16
 typedef struct ubloxSbas_s {
     uint8_t message[UBLOX_SBAS_MESSAGE_LENGTH];
 } ubloxSbas_t;
@@ -331,9 +331,6 @@ static bool _new_speed;
 //15:17:55  R -> UBX NAV,  Size 100,  'Navigation'
 //15:17:55  R -> UBX NAV-SVINFO,  Size 328,  'Satellite Status and Information'
 
-#define MAX_UBLOX_PAYLOAD_SIZE 100  // 100 bytes should be enough for all used messages
-#define UBLOX_BUFFER_SIZE MAX_UBLOX_PAYLOAD_SIZE
-
 // Receive buffer
 static union {
     ubx_nav_posllh posllh;
@@ -374,6 +371,7 @@ static bool gpsParceFrameUBLOX(void)
         gpsSol.llh.alt = _buffer.posllh.altitude_msl / 10;  //alt in cm
         gpsSol.eph = gpsConstrainEPE(_buffer.posllh.horizontal_accuracy / 10);
         gpsSol.epv = gpsConstrainEPE(_buffer.posllh.vertical_accuracy / 10);
+        gpsSol.flags.validEPE = 1;
         if (next_fix_type != GPS_NO_FIX)
             gpsSol.fixType = next_fix_type;
         _new_position = true;

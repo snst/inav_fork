@@ -49,16 +49,8 @@
 #define USE_MAG_HMC5883
 #define MAG_HMC5883_ALIGN       CW270_DEG
 
-#define USE_MAG_DATA_READY_SIGNAL
-#define ENSURE_MAG_DATA_READY_IS_HIGH
-#define MAG_INT_EXTI            PC14
-
 #define USE_FLASHFS
 #define USE_FLASH_M25P16
-
-#define SONAR
-#define SONAR_TRIGGER_PIN       PB0
-#define SONAR_ECHO_PIN          PB1
 
 #define USE_UART1
 #define USE_UART2
@@ -79,7 +71,7 @@
 #define SOFTSERIAL_1_TIMER      TIM3
 #define SOFTSERIAL_1_TIMER_RX_HARDWARE 4 // PWM 5
 #define SOFTSERIAL_1_TIMER_TX_HARDWARE 5 // PWM 6
-#define SOFTSERIAL_2_TIMER TIM3
+#define SOFTSERIAL_2_TIMER      TIM3
 #define SOFTSERIAL_2_TIMER_RX_HARDWARE 6 // PWM 7
 #define SOFTSERIAL_2_TIMER_TX_HARDWARE 7 // PWM 8
 
@@ -100,7 +92,6 @@
 #define RSSI_ADC_PIN            PB2
 
 #define LED_STRIP
-
 #define USE_LED_STRIP_ON_DMA1_CHANNEL2
 #define WS2811_PIN                      PA8
 #define WS2811_TIMER                    TIM1
@@ -109,21 +100,22 @@
 #define WS2811_DMA_TC_FLAG              DMA1_FLAG_TC2
 #define WS2811_DMA_HANDLER_IDENTIFER    DMA1_CH2_HANDLER
 
+#define SONAR
+#define SONAR_TRIGGER_PIN       PB0
+#define SONAR_ECHO_PIN          PB1
+
 #define ENABLE_BLACKBOX_LOGGING_ON_SPIFLASH_BY_DEFAULT
 
+#define DEFAULT_FEATURES        (FEATURE_BLACKBOX | FEATURE_VBAT)
 #define DEFAULT_RX_FEATURE      FEATURE_RX_PPM
-#define DEFAULT_FEATURES        FEATURE_BLACKBOX
-
-#define NAV
-#define NAV_AUTO_MAG_DECLINATION
-#define NAV_GPS_GLITCH_DETECTION
-#define NAV_MAX_WAYPOINTS       60
 
 #define SPEKTRUM_BIND
-// USART3,
-#define BIND_PIN                PB11
+#define BIND_PIN                PB11 // UART3
 
 #define USE_SERIAL_4WAY_BLHELI_INTERFACE
+
+// Number of available PWM outputs
+#define MAX_PWM_OUTPUT_PORTS    12
 
 // IO - stm32f303cc in 48pin package
 #define TARGET_IO_PORTA         0xffff
@@ -133,4 +125,3 @@
 
 #define USABLE_TIMER_CHANNEL_COUNT 17
 #define USED_TIMERS             ( TIM_N(1) | TIM_N(2) | TIM_N(3) | TIM_N(4) | TIM_N(15) | TIM_N(16) | TIM_N(17) )
-

@@ -20,68 +20,18 @@
 #include <string.h>
 #include <math.h>
 
-#include "common/axis.h"
 #include "common/filter.h"
 #include "common/maths.h"
 
-#include "drivers/gyro_sync.h"
-
-#define BIQUAD_Q    (1.0f / 1.41421356f)     /* quality factor - butterworth (1 / sqrt(2)) */
-#define M_PI_FLOAT  3.14159265358979323846f
-
-/* sets up a biquad Filter */
-void biquadFilterInit(biquadFilter_t *newState, uint8_t filterCutFreq, int16_t samplingRate)
-{
-    float omega, sn, cs, alpha;
-    float a0, a1, a2, b0, b1, b2;
-
-    /* If sampling rate == 0 - use main loop target rate */
-    if (!samplingRate) {
-        samplingRate = 1000000 / targetLooptime;
-    }
-
-    /* setup variables */
-    omega = 2 * M_PIf * (float)filterCutFreq / (float)samplingRate;
-    sn = sin_approx(omega);
-    cs = cos_approx(omega);
-    alpha = sn / (2 * BIQUAD_Q);
-
-    b0 = (1 - cs) / 2;
-    b1 = 1 - cs;
-    b2 = (1 - cs) / 2;
-    a0 = 1 + alpha;
-    a1 = -2 * cs;
-    a2 = 1 - alpha;
-
-    /* precompute the coefficients */
-    newState->b0 = b0 / a0;
-    newState->b1 = b1 / a0;
-    newState->b2 = b2 / a0;
-    newState->a1 = a1 / a0;
-    newState->a2 = a2 / a0;
-
-    /* zero initial samples */
-    newState->d1 = newState->d2 = 1;
-}
-
-/* Computes a biquad_t filter on a sample */
-float biquadFilterApply(biquadFilter_t *state, float sample)
-{
-    float result;
-
-    result = state->b0 * sample + state->d1;
-    state->d1 = state->b1 * sample - state->a1 * result + state->d2;
-    state->d2 = state->b2 * sample - state->a2 * result;
-
-    return result;
-}
+#define BIQUAD_BANDWIDTH 1.9f     /* bandwidth in octaves */
+#define BIQUAD_Q 1.0f / sqrtf(2.0f)     /* quality factor - butterworth*/
 
 // PT1 Low Pass filter
 
 // f_cut = cutoff frequency
 void pt1FilterInit(pt1Filter_t *filter, uint8_t f_cut, float dT)
 {
-    filter->RC = 1.0f / ( 2.0f * M_PI_FLOAT * f_cut );
+    filter->RC = 1.0f / ( 2.0f * M_PIf * f_cut );
     filter->dT = dT;
 }
 
@@ -91,13 +41,14 @@ float pt1FilterApply(pt1Filter_t *filter, float input)
     return filter->state;
 }
 
-float pt1FilterApply4(pt1Filter_t *filter, float input, float f_cut, float dT)
+float pt1FilterApply4(pt1Filter_t *filter, float input, uint16_t f_cut, float dT)
 {
     // Pre calculate and store RC
     if (!filter->RC) {
-        filter->RC = 1.0f / ( 2.0f * (float)M_PI * f_cut );
+        filter->RC = 1.0f / ( 2.0f * M_PIf * f_cut );
     }
 
+    filter->dT = dT;    // cache latest dT for possible use in pt1FilterApply
     filter->state = filter->state + dT / (filter->RC + dT) * (input - filter->state);
     return filter->state;
 }
@@ -126,7 +77,67 @@ float rateLimitFilterApply4(rateLimitFilter_t *filter, float input, float rate_l
     return filter->state;
 }
 
-// FIR filter
+float filterGetNotchQ(uint16_t centerFreq, uint16_t cutoff)
+{
+    const float octaves = log2f((float)centerFreq  / (float)cutoff) * 2;
+    return sqrtf(powf(2, octaves)) / (powf(2, octaves) - 1);
+}
+
+// sets up a biquad Filter
+void biquadFilterInitLPF(biquadFilter_t *filter, uint16_t filterFreq, uint32_t refreshRate)
+{
+    biquadFilterInit(filter, filterFreq, refreshRate, BIQUAD_Q, FILTER_LPF);
+}
+
+void biquadFilterInit(biquadFilter_t *filter, uint16_t filterFreq, uint32_t refreshRate, float Q, biquadFilterType_e filterType)
+{
+    // setup variables
+    const float sampleRate = 1.0f / ((float)refreshRate * 0.000001f);
+    const float omega = 2.0f * M_PIf * ((float)filterFreq) / sampleRate;
+    const float sn = sin_approx(omega);
+    const float cs = cos_approx(omega);
+    const float alpha = sn / (2 * Q);
+
+    float b0, b1, b2;
+    switch (filterType) {
+    case FILTER_LPF:
+        b0 = (1 - cs) / 2;
+        b1 = 1 - cs;
+        b2 = (1 - cs) / 2;
+        break;
+    case FILTER_NOTCH:
+        b0 =  1;
+        b1 = -2 * cs;
+        b2 =  1;
+        break;
+    }
+    const float a0 =  1 + alpha;
+    const float a1 = -2 * cs;
+    const float a2 =  1 - alpha;
+
+    // precompute the coefficients
+    filter->b0 = b0 / a0;
+    filter->b1 = b1 / a0;
+    filter->b2 = b2 / a0;
+    filter->a1 = a1 / a0;
+    filter->a2 = a2 / a0;
+
+    // zero initial samples
+    filter->d1 = filter->d2 = 0;
+}
+
+// Computes a biquad_t filter on a sample
+float biquadFilterApply(biquadFilter_t *filter, float input)
+{
+    const float result = filter->b0 * input + filter->d1;
+    filter->d1 = filter->b1 * input - filter->a1 * result + filter->d2;
+    filter->d2 = filter->b2 * input - filter->a2 * result;
+    return result;
+}
+
+/*
+ * FIR filter
+ */
 void firFilterInit2(firFilter_t *filter, float *buf, uint8_t bufLength, const float *coeffs, uint8_t coeffsLength)
 {
     filter->buf = buf;
@@ -136,6 +147,10 @@ void firFilterInit2(firFilter_t *filter, float *buf, uint8_t bufLength, const fl
     memset(filter->buf, 0, sizeof(float) * filter->bufLength);
 }
 
+/*
+ * FIR filter initialisation
+ * If FIR filter is just used for averaging, coeffs can be set to NULL
+ */
 void firFilterInit(firFilter_t *filter, float *buf, uint8_t bufLength, const float *coeffs)
 {
     firFilterInit2(filter, buf, bufLength, coeffs, bufLength);
@@ -147,7 +162,7 @@ void firFilterUpdate(firFilter_t *filter, float input)
     filter->buf[0] = input;
 }
 
-float firFilterApply(firFilter_t *filter)
+float firFilterApply(const firFilter_t *filter)
 {
     float ret = 0.0f;
     for (int ii = 0; ii < filter->coeffsLength; ++ii) {

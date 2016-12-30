@@ -66,7 +66,7 @@
 #define USE_ACC_SPI_MPU6000
 #define USE_ACC_SPI_MPU6500
 
-#define BARO
+//#define BARO
 #define USE_BARO_MS5611
 #define USE_BARO_BMP085
 #define USE_BARO_BMP280
@@ -79,13 +79,11 @@
 #define USE_FLASHTOOLS
 #define USE_FLASH_M25P16
 
-#define SONAR
+//#define SONAR
 #define SONAR_TRIGGER_PIN       PB0 // RX7 (PB0) - only 3.3v ( add a 1K Ohms resistor )
 #define SONAR_ECHO_PIN          PB1 // RX8 (PB1) - only 3.3v ( add a 1K Ohms resistor )
 #define SONAR_TRIGGER_PIN_PWM   PB8 // PWM5 (PB8) - 5v tolerant
 #define SONAR_ECHO_PIN_PWM      PB9 // PWM6 (PB9) - 5v tolerant
-
-#define DISPLAY
 
 #define USE_UART1
 #define USE_UART2
@@ -113,9 +111,12 @@
 #define RSSI_ADC_PIN            PA1
 #define EXTERNAL1_ADC_PIN       PA5
 
-#define DISPLAY
+//#define USE_DASHBOARD
 
 #define USE_SERIAL_4WAY_BLHELI_INTERFACE
+
+// Number of available PWM outputs
+#define MAX_PWM_OUTPUT_PORTS    10
 
 // IO - stm32f103RCT6 in 64pin package
 #define TARGET_IO_PORTA         0xffff
@@ -125,4 +126,3 @@
 
 #define USABLE_TIMER_CHANNEL_COUNT 14
 #define USED_TIMERS     (TIM_N(1) | TIM_N(2) | TIM_N(3) | TIM_N(4))
-

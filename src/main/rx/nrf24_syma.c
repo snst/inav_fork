@@ -23,15 +23,16 @@
 #include <string.h>
 
 #include <platform.h>
-#include "build/build_config.h"
-
 
 #ifdef USE_RX_SYMA
+
+#include "build/build_config.h"
 
 #include "drivers/rx_nrf24l01.h"
 #include "drivers/system.h"
 
-#include "rx/nrf24.h"
+#include "rx/rx.h"
+#include "rx/rx_spi.h"
 #include "rx/nrf24_syma.h"
 
 /*
@@ -54,7 +55,7 @@
  * uses address received in bind packets
  * hops between 4 channels generated from address received in bind packets
  *
- * SymaX5 Protocol
+ * SymaX5C Protocol
  * No auto acknowledgment
  * Payload size is 16, static
  * Data rate is 1Mbps
@@ -85,7 +86,7 @@ enum {
 #define FLAG_VIDEO_X5C  0x10
 #define FLAG_RATE_X5C   0x04
 
-STATIC_UNIT_TESTED nrf24_protocol_t symaProtocol;
+STATIC_UNIT_TESTED rx_spi_protocol_e symaProtocol;
 
 typedef enum {
     STATE_BIND = 0,
@@ -159,11 +160,11 @@ STATIC_UNIT_TESTED uint16_t symaConvertToPwmSigned(uint8_t val)
 
 void symaNrf24SetRcDataFromPayload(uint16_t *rcData, const uint8_t *packet)
 {
-    rcData[NRF24_THROTTLE] = symaConvertToPwmUnsigned(packet[0]); // throttle
-    rcData[NRF24_ROLL] = symaConvertToPwmSigned(packet[3]); // aileron
+    rcData[RC_SPI_THROTTLE] = symaConvertToPwmUnsigned(packet[0]); // throttle
+    rcData[RC_SPI_ROLL] = symaConvertToPwmSigned(packet[3]); // aileron
     if (symaProtocol == NRF24RX_SYMA_X) {
-        rcData[NRF24_PITCH] = symaConvertToPwmSigned(packet[1]); // elevator
-        rcData[NRF24_YAW] = symaConvertToPwmSigned(packet[2]); // rudder
+        rcData[RC_SPI_PITCH] = symaConvertToPwmSigned(packet[1]); // elevator
+        rcData[RC_SPI_YAW] = symaConvertToPwmSigned(packet[2]); // rudder
         const uint8_t rate = (packet[5] & 0xc0) >> 6;
         if (rate == RATE_LOW) {
             rcData[RC_CHANNEL_RATE] = PWM_RANGE_MIN;
@@ -177,8 +178,8 @@ void symaNrf24SetRcDataFromPayload(uint16_t *rcData, const uint8_t *packet)
         rcData[RC_CHANNEL_VIDEO] = packet[4] & FLAG_VIDEO ? PWM_RANGE_MAX : PWM_RANGE_MIN;
         rcData[RC_CHANNEL_HEADLESS] = packet[14] & FLAG_HEADLESS ? PWM_RANGE_MAX : PWM_RANGE_MIN;
     } else {
-        rcData[NRF24_PITCH] = symaConvertToPwmSigned(packet[2]); // elevator
-        rcData[NRF24_YAW] = symaConvertToPwmSigned(packet[1]); // rudder
+        rcData[RC_SPI_PITCH] = symaConvertToPwmSigned(packet[2]); // elevator
+        rcData[RC_SPI_YAW] = symaConvertToPwmSigned(packet[1]); // rudder
         const uint8_t flags = packet[14];
         rcData[RC_CHANNEL_RATE] = flags & FLAG_RATE_X5C ? PWM_RANGE_MAX : PWM_RANGE_MIN;
         rcData[RC_CHANNEL_FLIP] = flags & FLAG_FLIP_X5C ? PWM_RANGE_MAX : PWM_RANGE_MIN;
@@ -222,61 +223,54 @@ static void setSymaXHoppingChannels(uint32_t addr)
     }
 }
 
-static void symaSetBound(const uint8_t* rxTxAddr)
-{
-    protocolState = STATE_DATA;
-    // using protocol NRF24L01_SYMA_X, since NRF24L01_SYMA_X5C went straight into data mode
-    // set the hopping channels as determined by the rxTxAddr received in the bind packet
-    setSymaXHoppingChannels(rxTxAddr[0]);
-    timeOfLastHop = micros();
-    packetCount = 0;
-    // set the NRF24 to use the rxTxAddr received in the bind packet
-    NRF24L01_WriteRegisterMulti(NRF24L01_0A_RX_ADDR_P0, rxTxAddr, RX_TX_ADDR_LEN);
-    symaRfChannelIndex = 0;
-    NRF24L01_SetChannel(symaRfChannels[0]);
-}
-
 /*
  * This is called periodically by the scheduler.
- * Returns NRF24_RECEIVED_DATA if a data packet was received.
+ * Returns RX_SPI_RECEIVED_DATA if a data packet was received.
  */
-nrf24_received_t symaNrf24DataReceived(uint8_t *payload)
+rx_spi_received_e symaNrf24DataReceived(uint8_t *payload)
 {
-    nrf24_received_t ret = NRF24_RECEIVED_NONE;
-    uint32_t timeNowUs;
+    rx_spi_received_e ret = RX_SPI_RECEIVED_NONE;
+
     switch (protocolState) {
     case STATE_BIND:
         if (NRF24L01_ReadPayloadIfAvailable(payload, payloadSize)) {
             const bool bindPacket = symaCheckBindPacket(payload);
             if (bindPacket) {
-                ret = NRF24_RECEIVED_BIND;
-                symaSetBound(rxTxAddr);
+                ret = RX_SPI_RECEIVED_BIND;
+                protocolState = STATE_DATA;
+                // using protocol NRF24L01_SYMA_X, since NRF24L01_SYMA_X5C went straight into data mode
+                // set the hopping channels as determined by the rxTxAddr received in the bind packet
+                setSymaXHoppingChannels(rxTxAddr[0]);
+                // set the NRF24 to use the rxTxAddr received in the bind packet
+                NRF24L01_WriteRegisterMulti(NRF24L01_0A_RX_ADDR_P0, rxTxAddr, RX_TX_ADDR_LEN);
+                packetCount = 0;
+                symaRfChannelIndex = 0;
+                NRF24L01_SetChannel(symaRfChannels[0]);
             }
         }
         break;
     case STATE_DATA:
         // read the payload, processing of payload is deferred
         if (NRF24L01_ReadPayloadIfAvailable(payload, payloadSize)) {
-            ret = NRF24_RECEIVED_DATA;
-        }
-        timeNowUs = micros();
-        if ((ret == NRF24_RECEIVED_DATA) || (timeNowUs > timeOfLastHop + hopTimeout)) {
             symaHopToNextChannel();
-            timeOfLastHop = timeNowUs;
+            timeOfLastHop = micros();
+            ret = RX_SPI_RECEIVED_DATA;
+        }
+        if (micros() > timeOfLastHop + hopTimeout) {
+            symaHopToNextChannel();
+            timeOfLastHop = micros();
         }
         break;
     }
     return ret;
 }
 
-static void symaNrf24Setup(nrf24_protocol_t protocol)
+static void symaNrf24Setup(rx_spi_protocol_e protocol)
 {
     symaProtocol = protocol;
     NRF24L01_Initialize(BV(NRF24L01_00_CONFIG_EN_CRC) | BV( NRF24L01_00_CONFIG_CRCO)); // sets PWR_UP, EN_CRC, CRCO - 2 byte CRC
+    NRF24L01_SetupBasic();
 
-    NRF24L01_WriteReg(NRF24L01_01_EN_AA, 0); // No auto acknowledgment
-    NRF24L01_WriteReg(NRF24L01_02_EN_RXADDR, BV(NRF24L01_02_EN_RXADDR_ERX_P0));
-    NRF24L01_WriteReg(NRF24L01_03_SETUP_AW, NRF24L01_03_SETUP_AW_5BYTES);   // 5-byte RX/TX address
     if (symaProtocol == NRF24RX_SYMA_X) {
         payloadSize = SYMA_X_PROTOCOL_PAYLOAD_SIZE;
         NRF24L01_WriteReg(NRF24L01_06_RF_SETUP, NRF24L01_06_RF_SETUP_RF_DR_250Kbps | NRF24L01_06_RF_SETUP_RF_PWR_n12dbm);
@@ -294,10 +288,6 @@ static void symaNrf24Setup(nrf24_protocol_t protocol)
         memcpy(symaRfChannels, symaRfChannelsX5C, SYMA_X5C_RF_CHANNEL_COUNT);
     }
     NRF24L01_SetChannel(symaRfChannels[0]);
-
-    NRF24L01_WriteReg(NRF24L01_08_OBSERVE_TX, 0x00);
-    NRF24L01_WriteReg(NRF24L01_1C_DYNPD, 0x00); // Disable dynamic payload length on all pipes
-
     NRF24L01_WriteReg(NRF24L01_11_RX_PW_P0, payloadSize);
 
     NRF24L01_SetRxMode(); // enter receive mode to start listening for packets
@@ -306,7 +296,7 @@ static void symaNrf24Setup(nrf24_protocol_t protocol)
 void symaNrf24Init(const rxConfig_t *rxConfig, rxRuntimeConfig_t *rxRuntimeConfig)
 {
     rxRuntimeConfig->channelCount = RC_CHANNEL_COUNT;
-    symaNrf24Setup((nrf24_protocol_t)rxConfig->nrf24rx_protocol);
+    symaNrf24Setup((rx_spi_protocol_e)rxConfig->rx_spi_protocol);
 }
 #endif
 

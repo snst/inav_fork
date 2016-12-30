@@ -38,15 +38,11 @@
 #define MAX_SERVOS  8
 #endif
 
+#define PWM_TIMER_MHZ 1
 
 #define PULSE_1MS   (1000)      // 1ms pulse width
 
 #define MAX_INPUTS  8
-
-#define PWM_TIMER_MHZ 1
-#define ONESHOT125_TIMER_MHZ 8
-#define PWM_BRUSHED_TIMER_MHZ 8
-
 
 typedef struct sonarIOConfig_s {
     ioTag_t triggerTag;
@@ -54,6 +50,7 @@ typedef struct sonarIOConfig_s {
 } sonarIOConfig_t;
 
 typedef struct drv_pwm_config_s {
+    bool enablePWMOutput;
     bool useParallelPWM;
     bool usePPM;
     bool useSerialRx;
@@ -63,10 +60,10 @@ typedef struct drv_pwm_config_s {
     bool useUART3;
     bool useUART6;
     bool useVbat;
-    bool useOneshot;
+    bool useFastPwm;
     bool useSoftSerial;
     bool useLEDStrip;
-#ifdef SONAR
+#if defined(SONAR) && defined(USE_SONAR_ONBOARD)
     bool useSonar;
 #endif
 #ifdef USE_SERVOS
@@ -76,6 +73,7 @@ typedef struct drv_pwm_config_s {
     uint16_t servoCenterPulse;
 #endif
     bool airplane;       // fixed wing hardware config, lots of servos etc
+    uint8_t pwmProtocolType;
     uint16_t motorPwmRate;
     uint16_t idlePulse;  // PWM value to use when initializing the driver. set this to either PULSE_1MS (regular pwm),
                          // some higher value (used by 3d mode), or 0, for brushed pwm drivers.
@@ -96,7 +94,7 @@ typedef enum {
     PWM_PF_SERVO = (1 << 1),
     PWM_PF_MOTOR_MODE_BRUSHED = (1 << 2),
     PWM_PF_OUTPUT_PROTOCOL_PWM = (1 << 3),
-    PWM_PF_OUTPUT_PROTOCOL_ONESHOT = (1 << 4),
+    PWM_PF_OUTPUT_PROTOCOL_FASTPWM = (1 << 4),
     PWM_PF_PPM = (1 << 5),
     PWM_PF_PWM = (1 << 6)
 } pwmPortFlags_e;

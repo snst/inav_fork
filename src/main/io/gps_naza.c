@@ -29,14 +29,12 @@
 
 #include "build/debug.h"
 
-
 #include "common/maths.h"
 #include "common/axis.h"
 #include "common/utils.h"
 
-#include "drivers/system.h"
 #include "drivers/serial.h"
-#include "drivers/serial_uart.h"
+#include "drivers/system.h"
 
 #include "io/serial.h"
 #include "io/gps.h"
@@ -221,6 +219,7 @@ static bool NAZA_parse_gps(void)
         gpsSol.magData[1] = decodeShort(_buffernaza.mag.y, mask_mag);
         gpsSol.magData[2] = (_buffernaza.mag.z ^ (mask_mag<<8));
 
+        gpsSol.flags.validMag = 1;
         break;
     case ID_VER:
         break;
