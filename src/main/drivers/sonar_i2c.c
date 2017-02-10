@@ -57,16 +57,11 @@ bool sonar_i2c_module_detect(void)
 {
     int16_t distance;
     bool ack = i2cRead(SONAR_I2C_INSTANCE, I2C_GPS_ADDRESS, I2C_SONAR_DATA, sizeof(distance), (uint8_t *)&distance);  
-//	debug[1] = ack ? 1 : 2;
-//	ack = true;
     return ack;
 }
 
-void sonar_i2c_init(struct rangefinder_s *rangeFinder)
+void sonar_i2c_init(void)
 {
-    rangeFinder->maxRangeCm = HCSR04_MAX_RANGE_CM;
-    rangeFinder->detectionConeDeciDegrees = HCSR04_DETECTION_CONE_DECIDEGREES;
-    rangeFinder->detectionConeExtendedDeciDegrees = HCSR04_DETECTION_CONE_EXTENDED_DECIDEGREES;
 }
 
 void sonar_i2c_start_reading(void)
@@ -85,4 +80,19 @@ int32_t sonar_i2c_get_distance(void)
 {
     return sonar_distance;
 }
+
+bool sonarI2cDetect(rangefinderDev_t *dev)
+{
+	dev->delayMs = 100;
+    dev->maxRangeCm = HCSR04_MAX_RANGE_CM;
+    dev->detectionConeDeciDegrees = HCSR04_DETECTION_CONE_DECIDEGREES;
+    dev->detectionConeExtendedDeciDegrees = HCSR04_DETECTION_CONE_EXTENDED_DECIDEGREES;
+
+    dev->init = &sonar_i2c_init;
+    dev->update = &sonar_i2c_start_reading;
+    dev->read = &sonar_i2c_get_distance;
+	
+	return true;
+}
+
 #endif

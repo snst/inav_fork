@@ -24,7 +24,7 @@
 #include "build/atomic.h"
 
 #include "io.h"
-#include "system.h"
+#include "time.h"
 
 #include "bus_i2c.h"
 #include "nvic.h"
@@ -41,7 +41,7 @@ static void i2cUnstick(IO_t scl, IO_t sda);
 #ifdef STM32F4
 
 #if defined(USE_I2C_PULLUP)
-#define IOCFG_I2C IO_CONFIG(GPIO_Mode_AF, 0, GPIO_OType_OD, GPIO_PuPd_UP)
+#define IOCFG_I2C IO_CONFIG(GPIO_Mode_AF, GPIO_Speed_50MHz, GPIO_OType_OD, GPIO_PuPd_UP)
 #else
 #define IOCFG_I2C IOCFG_AF_OD
 #endif
@@ -140,7 +140,7 @@ static i2cDevice_t i2cHardwareMap[] = {
 #endif
 };
 
-static i2cBusState_t busState[I2CDEV_MAX] = { { 0 } };
+static i2cBusState_t busState[I2CDEV_COUNT] = { { 0 } };
 
 static void i2cResetInterface(i2cBusState_t * i2cBusState)
 {
@@ -165,7 +165,7 @@ static void i2cStateMachine(i2cBusState_t * i2cBusState, const uint32_t currentT
 
         case I2C_STATE_STOPPING:
             // Wait for stop bit to clear
-            // RM0090: When the STOP, START or PEC bit is set, the software must not perform any write access 
+            // RM0090: When the STOP, START or PEC bit is set, the software must not perform any write access
             // to I2C_CR1 before this bit is cleared by hardware. Otherwise there is a risk of setting a second STOP, START or PEC request.
             if ((I2Cx->CR1 & I2C_CR1_STOP) == 0) {
                 i2cBusState->state = I2C_STATE_STOPPED;
@@ -514,6 +514,10 @@ bool i2cWrite(I2CDevice device, uint8_t addr, uint8_t reg, uint8_t data)
 {
     static uint8_t writeBuf[1];
 
+    // Don't try to access the non-initialized device
+    if (!busState[device].initialized)
+        return false;
+
     // Set up write transaction
     writeBuf[0] = data;
 
@@ -533,6 +537,10 @@ bool i2cWrite(I2CDevice device, uint8_t addr, uint8_t reg, uint8_t data)
 
 bool i2cRead(I2CDevice device, uint8_t addr, uint8_t reg, uint8_t len, uint8_t* buf)
 {
+    // Don't try to access the non-initialized device
+    if (!busState[device].initialized)
+        return false;
+
     // Set up read transaction
     busState[device].addr = addr << 1;
     busState[device].reg = reg;

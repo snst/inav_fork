@@ -25,7 +25,7 @@
 #include "flash_m25p16.h"
 #include "io.h"
 #include "bus_spi.h"
-#include "system.h"
+#include "time.h"
 
 #define M25P16_INSTRUCTION_RDID             0x9F
 #define M25P16_INSTRUCTION_READ_BYTES       0x03
@@ -204,16 +204,16 @@ static bool m25p16_readIdentification()
  */
 bool m25p16_init(ioTag_t csTag)
 {
-    /* 
-        if we have already detected a flash device we can simply exit 
-        
+    /*
+        if we have already detected a flash device we can simply exit
+
         TODO: change the init param in favour of flash CFG when ParamGroups work is done
         then cs pin can be specified in hardware_revision.c or config.c (dependent on revision).
     */
     if (geometry.sectors) {
         return true;
     }
-    
+
     if (csTag) {
         m25p16CsPin = IOGetByTag(csTag);
     } else {

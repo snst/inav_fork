@@ -20,7 +20,7 @@
 
 #include <platform.h>
 
-#include "system.h"
+#include "time.h"
 #include "io.h"
 #include "io_impl.h"
 #include "rcc.h"
@@ -106,7 +106,7 @@ static i2cDevice_t i2cHardwareMap[] = {
     { .dev = I2C2, .scl = IO_TAG(I2C2_SCL), .sda = IO_TAG(I2C2_SDA), .rcc = RCC_APB1(I2C2), .overClock = I2C2_OVERCLOCK }
 };
 
-static i2cBusState_t busState[I2CDEV_MAX] = { { 0 } };
+static i2cBusState_t busState[I2CDEV_COUNT] = { { 0 } };
 
 static void i2cResetInterface(i2cBusState_t * i2cBusState)
 {
@@ -376,6 +376,10 @@ bool i2cWrite(I2CDevice device, uint8_t addr, uint8_t reg, uint8_t data)
 {
     static uint8_t writeBuf[1];
 
+    // Don't try to access the non-initialized device
+    if (!busState[device].initialized)
+        return false;
+
     // Set up write transaction
     writeBuf[0] = data;
 
@@ -395,6 +399,10 @@ bool i2cWrite(I2CDevice device, uint8_t addr, uint8_t reg, uint8_t data)
 
 bool i2cRead(I2CDevice device, uint8_t addr, uint8_t reg, uint8_t len, uint8_t* buf)
 {
+    // Don't try to access the non-initialized device
+    if (!busState[device].initialized)
+        return false;
+
     // Set up read transaction
     busState[device].addr = addr << 1;
     busState[device].reg = reg;

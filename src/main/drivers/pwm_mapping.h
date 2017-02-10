@@ -63,7 +63,7 @@ typedef struct drv_pwm_config_s {
     bool useFastPwm;
     bool useSoftSerial;
     bool useLEDStrip;
-#if defined(SONAR) && defined(USE_SONAR_ONBOARD)
+#ifdef SONAR
     bool useSonar;
 #endif
 #ifdef USE_SERVOS

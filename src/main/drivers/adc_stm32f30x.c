@@ -20,7 +20,7 @@
 #include <string.h>
 
 #include "platform.h"
-#include "system.h"
+#include "time.h"
 #include "gpio.h"
 
 #include "sensor.h"
@@ -38,8 +38,8 @@
 #endif
 
 const adcDevice_t adcHardware[] = {
-    { .ADCx = ADC1, .rccADC = RCC_AHB(ADC12), .rccDMA = RCC_AHB(DMA1), .DMAy_Channelx = DMA1_Channel1 }, 
-    { .ADCx = ADC2, .rccADC = RCC_AHB(ADC12), .rccDMA = RCC_AHB(DMA2), .DMAy_Channelx = DMA2_Channel1 } 
+    { .ADCx = ADC1, .rccADC = RCC_AHB(ADC12), .rccDMA = RCC_AHB(DMA1), .DMAy_Channelx = DMA1_Channel1 },
+    { .ADCx = ADC2, .rccADC = RCC_AHB(ADC12), .rccDMA = RCC_AHB(DMA2), .DMAy_Channelx = DMA2_Channel1 }
 };
 
 const adcTagMap_t adcTagMap[] = {

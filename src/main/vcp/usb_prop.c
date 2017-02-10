@@ -16,8 +16,8 @@
  *
  *        http://www.st.com/software_license_agreement_liberty_v2
  *
- * Unless required by applicable law or agreed to in writing, software 
- * distributed under the License is distributed on an "AS IS" BASIS, 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
@@ -300,7 +300,7 @@ uint8_t *Virtual_Com_Port_GetConfigDescriptor(uint16_t Length)
 uint8_t *Virtual_Com_Port_GetStringDescriptor(uint16_t Length)
 {
     uint8_t wValue0 = pInformation->USBwValue0;
-    if (wValue0 >= 4) {
+    if (wValue0 > 4) {
         return NULL;
     } else {
         return Standard_GetDescriptorData(Length, &String_Descriptor[wValue0]);

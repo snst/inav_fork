@@ -17,8 +17,6 @@
 
 #pragma once
 
-struct rangefinder_s;
-bool sonar_i2c_module_detect();
-void sonar_i2c_init(struct rangefinder_s *rangefinder);
-void sonar_i2c_start_reading(void);
-int32_t sonar_i2c_get_distance(void);
+bool sonarI2cDetect(rangefinderDev_t *dev);
+
+
